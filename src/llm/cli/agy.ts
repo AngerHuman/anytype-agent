@@ -1,4 +1,3 @@
-import { Injectable } from "@nestjs/common";
 import type { JSONValue, ModelMessage } from "ai";
 import {
   concat,
@@ -13,8 +12,9 @@ import {
   switchMap,
   tap,
 } from "rxjs";
+import type { AppConfig } from "../../config/config.schema";
 import type { SshClient } from "../../ssh/ssh.client";
-import { LlmProvider } from "../types";
+import { type ApiAliasHandler, type ApiParams, LlmCliProvider } from ".";
 
 interface AgyInitEvent {
   event: "init";
@@ -58,19 +58,19 @@ interface AgyResultEvent {
 
 type AgyEvent = AgyInitEvent | AgyStepUpdateEvent | AgyResultEvent;
 
-@Injectable()
-export class AgyCliProvider extends LlmProvider {
-  public readonly mode = "cli";
-
+export class AgyCliProvider extends LlmCliProvider {
   constructor(
     // TODO remove this decoupling, introduce a ProcessSpawner
     public readonly process: SshClient,
+    config: AppConfig,
+    apiAliasHandler: ApiAliasHandler,
+    apiParams: ApiParams,
     private readonly binaryPath: string = "agy",
   ) {
-    super();
+    super(config, apiAliasHandler, apiParams);
   }
 
-  exec(messages: ModelMessage[], abort?: AbortSignal): Observable<ModelMessage> {
+  protected execInternal(messages: ModelMessage[], abort?: AbortSignal): Observable<ModelMessage> {
     const args = [
       "--input-format",
       "text",
@@ -79,6 +79,7 @@ export class AgyCliProvider extends LlmProvider {
       "--dangerously-skip-permissions",
       "--disable-slash-commands",
     ];
+
     const stdinText = this.serializeMessagesToPrompt(messages);
 
     return defer(() => {
@@ -95,6 +96,17 @@ export class AgyCliProvider extends LlmProvider {
         tap({ unsubscribe: () => local.abort() }),
       );
     });
+  }
+
+  override extendSystemMessage(msg: string) {
+    return `${msg}
+
+    Communication & Language Guidelines:
+    - ALWAYS respond in the exact same language used by the user in their message or query (e.g., if the user wrote in Russian, answer in Russian; if in English, answer in English).
+    - Formulate a helpful, structured, and clear response.
+    - Never show the user SPACE ID;
+    - Do not use Markdown in your responses.
+    `;
   }
 
   private splitLines(stdout$: Observable<string>): Observable<string> {

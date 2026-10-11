@@ -1,28 +1,43 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { ModelMessage } from "ai";
-import { firstValueFrom, of, Subject, toArray } from "rxjs";
-import type { SshClient, SshProcess } from "../../../ssh/ssh.client";
+import { firstValueFrom, Subject, toArray } from "rxjs";
+import {
+  createMockAliasHandler,
+  createMockSshClient,
+  createTestRunContext,
+  mockApiParams,
+  mockCliConfig,
+} from "../../__tests__/test.fixtures";
 import { AgyCliProvider } from "../agy";
 
-function createMockProcess(stdout$: Subject<string>, onKill = mock(() => {})): SshProcess {
-  return {
-    stdout$: stdout$.asObservable(),
-    stderr$: of(),
-    exit: Promise.resolve({ code: 0 }),
-    kill: onKill,
-  } as unknown as SshProcess;
-}
+describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
+  const setupProvider = (stdout$: Subject<string>, onKill = mock(() => {})) => {
+    const mockSsh = createMockSshClient(stdout$, onKill);
+    const mockAliasHandler = createMockAliasHandler();
 
-describe("AgyCliProvider (Unit Tests)", () => {
+    const provider = new AgyCliProvider(
+      mockSsh.client,
+      mockCliConfig,
+      mockAliasHandler,
+      mockApiParams,
+      "agy",
+    );
+
+    return {
+      provider,
+      mockSsh,
+      mockAliasHandler,
+      getSpawnOpts: mockSsh.getCapturedOpts,
+    };
+  };
+
   it("1. NDJSON chunking: handles lines split across multiple chunks", async () => {
     const stdout$ = new Subject<string>();
-    const spawnMock = mock(async () => createMockProcess(stdout$));
-    const mockSshClient = { spawn: spawnMock } as unknown as SshClient;
-
-    const provider = new AgyCliProvider(mockSshClient, "agy");
+    const { provider } = setupProvider(stdout$);
     const messages: ModelMessage[] = [{ role: "user", content: "Hello" }];
+    const ctx = createTestRunContext();
 
-    const emissionsPromise = firstValueFrom(provider.exec(messages).pipe(toArray()));
+    const emissionsPromise = firstValueFrom(provider.exec(ctx, messages).pipe(toArray()));
     await Promise.resolve();
 
     stdout$.next('{"event": "step_update", "step_update": {"step_index": 0, "state": "ACTIVE", ');
@@ -52,18 +67,15 @@ describe("AgyCliProvider (Unit Tests)", () => {
 
   it("2. Tool Result mapping: maps DONE and ERROR tool steps to tool role messages", async () => {
     const stdout$ = new Subject<string>();
-    const spawnMock = mock(async () => createMockProcess(stdout$));
-    const mockSshClient = { spawn: spawnMock } as unknown as SshClient;
-
-    const provider = new AgyCliProvider(mockSshClient, "agy");
+    const { provider } = setupProvider(stdout$);
     const emissionsPromise = firstValueFrom(
-      provider.exec([{ role: "user", content: "test" }]).pipe(toArray()),
+      provider.exec(createTestRunContext(), [{ role: "user", content: "test" }]).pipe(toArray()),
     );
     await Promise.resolve();
 
     // Done tool
     stdout$.next(
-      JSON.stringify({
+      `${JSON.stringify({
         event: "step_update",
         step_update: {
           step_index: 1,
@@ -72,12 +84,12 @@ describe("AgyCliProvider (Unit Tests)", () => {
           tool_name: "fetch",
           tool_info: { output: "fetched text" },
         },
-      }) + "\n",
+      })}\n`,
     );
 
     // Error tool
     stdout$.next(
-      JSON.stringify({
+      `${JSON.stringify({
         event: "step_update",
         step_update: {
           step_index: 2,
@@ -86,15 +98,15 @@ describe("AgyCliProvider (Unit Tests)", () => {
           tool_name: "fetch",
           tool_info: { error: { message: "Network error" } },
         },
-      }) + "\n",
+      })}\n`,
     );
 
     // Result
     stdout$.next(
-      JSON.stringify({
+      `${JSON.stringify({
         event: "result",
         result: { status: "SUCCESS", response: "all done" },
-      }) + "\n",
+      })}\n`,
     );
     stdout$.complete();
 
@@ -130,22 +142,19 @@ describe("AgyCliProvider (Unit Tests)", () => {
 
   it("3. Non-JSON lines and init events: quietly ignored without dropping stream", async () => {
     const stdout$ = new Subject<string>();
-    const spawnMock = mock(async () => createMockProcess(stdout$));
-    const mockSshClient = { spawn: spawnMock } as unknown as SshClient;
-
-    const provider = new AgyCliProvider(mockSshClient, "agy");
+    const { provider } = setupProvider(stdout$);
     const emissionsPromise = firstValueFrom(
-      provider.exec([{ role: "user", content: "hi" }]).pipe(toArray()),
+      provider.exec(createTestRunContext(), [{ role: "user", content: "hi" }]).pipe(toArray()),
     );
     await Promise.resolve();
 
     stdout$.next("Warning: SSH key not found in cache\n");
-    stdout$.next(JSON.stringify({ event: "init", conversation_id: "conv-123" }) + "\n");
+    stdout$.next(`${JSON.stringify({ event: "init", conversation_id: "conv-123" })}\n`);
     stdout$.next(
-      JSON.stringify({
+      `${JSON.stringify({
         event: "result",
         result: { status: "SUCCESS", response: "hello back" },
-      }) + "\n",
+      })}\n`,
     );
     stdout$.complete();
 
@@ -159,20 +168,17 @@ describe("AgyCliProvider (Unit Tests)", () => {
 
   it("4. Failure result: throws error into stream", async () => {
     const stdout$ = new Subject<string>();
-    const spawnMock = mock(async () => createMockProcess(stdout$));
-    const mockSshClient = { spawn: spawnMock } as unknown as SshClient;
-
-    const provider = new AgyCliProvider(mockSshClient, "agy");
+    const { provider } = setupProvider(stdout$);
     const emissionsPromise = firstValueFrom(
-      provider.exec([{ role: "user", content: "fail" }]).pipe(toArray()),
+      provider.exec(createTestRunContext(), [{ role: "user", content: "fail" }]).pipe(toArray()),
     );
     await Promise.resolve();
 
     stdout$.next(
-      JSON.stringify({
+      `${JSON.stringify({
         event: "result",
         result: { status: "FAILURE", error: "Token budget exceeded" },
-      }) + "\n",
+      })}\n`,
     );
     stdout$.complete();
 
@@ -180,27 +186,38 @@ describe("AgyCliProvider (Unit Tests)", () => {
   });
 
   it("5. Unsubscribe: triggers local abort controller and cancels process", async () => {
-    let capturedSignal: AbortSignal | undefined;
     const stdout$ = new Subject<string>();
-
-    const spawnMock = mock(async (_cmd, _args, opts) => {
-      capturedSignal = opts.signal;
-      return createMockProcess(stdout$);
-    });
-    const mockSshClient = { spawn: spawnMock } as unknown as SshClient;
-
-    const provider = new AgyCliProvider(mockSshClient, "agy");
-    const sub = provider.exec([{ role: "user", content: "long run" }]).subscribe();
+    const { provider, getSpawnOpts } = setupProvider(stdout$);
+    const sub = provider
+      .exec(createTestRunContext(), [{ role: "user", content: "long run" }])
+      .subscribe();
 
     // Wait for spawn() promise to resolve and inner stdout$ subscription to be active
     await Promise.resolve();
 
-    expect(capturedSignal).toBeDefined();
-    expect(capturedSignal?.aborted).toBe(false);
+    const spawnOpts = getSpawnOpts();
+    expect(spawnOpts?.signal).toBeDefined();
+    expect(spawnOpts?.signal?.aborted).toBe(false);
 
     // Unsubscribe from downstream while process is streaming
     sub.unsubscribe();
 
-    expect(capturedSignal?.aborted).toBe(true);
+    expect(spawnOpts?.signal?.aborted).toBe(true);
+  });
+
+  it("6. Prompt serialization: serializes extended prompt with language guidelines into stdin", async () => {
+    const stdout$ = new Subject<string>();
+    const { provider, getSpawnOpts } = setupProvider(stdout$);
+    const ctx = createTestRunContext();
+    const messages: ModelMessage[] = [{ role: "user", content: "Привет" }];
+
+    firstValueFrom(provider.exec(ctx, messages).pipe(toArray()));
+    await Promise.resolve();
+
+    const stdin = getSpawnOpts()?.stdin;
+    expect(stdin).toBeDefined();
+    expect(stdin).toContain("[SYSTEM]:");
+    expect(stdin).toContain("Communication & Language Guidelines:");
+    expect(stdin).toContain("[USER]:\nПривет");
   });
 });

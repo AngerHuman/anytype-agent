@@ -21,18 +21,31 @@ import { LlmService } from "./llm.service";
           config.LLM.map(async (provider) => {
             if (provider.MODE === "cli") {
               await proxy.start();
+              let port = proxy.port;
+              if (!port) throw new Error("proxy port not available");
 
               // TODO: add a local process spawner here later
-              let spawner: SshClient | any;
+              let spawner: SshClient | undefined;
 
               if (provider.SSH) {
                 spawner = await ssh.connect(provider.SSH, provider.SSH_KEY, {
-                  localPort: proxy.port,
+                  localPort: port,
                 });
+
+                const remotePort = spawner.forwardPort?.remotePort;
+                if (remotePort) port = remotePort;
               }
 
               if (provider.CLI.endsWith("agy")) {
-                return new AgyCliProvider(spawner, provider.CLI);
+                if (!spawner) throw new Error("Local spawner not implemented yet");
+
+                return new AgyCliProvider(
+                  spawner,
+                  config,
+                  proxy,
+                  { port, docs: proxy.routesDoc },
+                  provider.CLI,
+                );
               }
             }
           }),

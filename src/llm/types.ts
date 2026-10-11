@@ -8,7 +8,7 @@ export abstract class LlmProvider {
   abstract mode: "cli" | "api";
   abstract process: unknown;
 
-  abstract exec(messages: ModelMessage[], abort?: AbortSignal): Observable<ModelMessage>;
+  abstract exec(ctx: LlmRunContext, messages: ModelMessage[]): Observable<ModelMessage>;
 }
 
 export interface LlmRunContext {

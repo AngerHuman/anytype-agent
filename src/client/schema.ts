@@ -163,18 +163,6 @@ export const Chat = Type.Object(
 );
 export type Chat = Static<typeof Chat>;
 
-/**
- * Last activity timestamp (ms) of a chat: last_message_date, falling back to
- * created_date, falling back to 0 (chat sinks to the tail of the activity sort).
- */
-export const chatActivityTs = (chat: Chat): number => {
-  const prop = (key: string) =>
-    chat.properties?.find((p) => p.key === key)?.date
-      ? Date.parse(chat.properties.find((p) => p.key === key).date as string)
-      : 0;
-  return prop("last_message_date") || prop("created_date");
-};
-
 export const ChatsResponse = Type.Object(
   {
     data: Type.Array(Chat),
