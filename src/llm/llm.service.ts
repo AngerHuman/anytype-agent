@@ -25,15 +25,18 @@ export class LlmService {
       // 3. Вызываем провайдер: передаем контекст и чистую историю
       return targetProvider.exec(ctx, history).pipe(
         map((response) => {
-          if (response.role === "tool") {
-            return LlmAction.create(JSON.stringify(response.content));
+          if (response.role === "assistant") {
+            if (Array.isArray(response.content)) {
+              const textPart = response.content.find((p) => p.type === "text");
+              if (textPart?.text.trim()) return LlmAction.create(textPart.text.trim());
+            }
+
+            if (isString(response.content)) return LlmResponse.create(response.content);
           }
-          if (response.role === "assistant" && isString(response.content)) {
-            return LlmResponse.create(response.content);
-          }
-          return null;
+
+          if (response.role === "tool") return LlmAction.create(JSON.stringify(response.content));
         }),
-        filter((event): event is LlmEvent => event !== null),
+        filter((event): event is LlmEvent => event !== undefined),
       );
     });
   }

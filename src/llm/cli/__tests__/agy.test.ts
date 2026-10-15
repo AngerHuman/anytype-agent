@@ -166,7 +166,7 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
     });
   });
 
-  it("4. Failure result: throws error into stream", async () => {
+  it("4. Failure result: throws error into stream for both ERROR and FAILURE status", async () => {
     const stdout$ = new Subject<string>();
     const { provider } = setupProvider(stdout$);
     const emissionsPromise = firstValueFrom(
@@ -177,12 +177,14 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
     stdout$.next(
       `${JSON.stringify({
         event: "result",
-        result: { status: "FAILURE", error: "Token budget exceeded" },
+        result: { status: "ERROR", error: "failed to decode stream input: unexpected EOF" },
       })}\n`,
     );
     stdout$.complete();
 
-    expect(emissionsPromise).rejects.toThrow("agy execution failed: Token budget exceeded");
+    expect(emissionsPromise).rejects.toThrow(
+      "agy execution failed: failed to decode stream input: unexpected EOF",
+    );
   });
 
   it("5. Unsubscribe: triggers local abort controller and cancels process", async () => {
@@ -218,6 +220,147 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
     expect(stdin).toBeDefined();
     expect(stdin).toContain("[SYSTEM]:");
     expect(stdin).toContain("Communication & Language Guidelines:");
+    expect(stdin).toContain("Tool Call Guidelines:");
     expect(stdin).toContain("[USER]:\nПривет");
+  });
+
+  it("7. Agent response stream: maps text preceding tool-call as comment, and final text before result as assistant content", async () => {
+    const stdout$ = new Subject<string>();
+    const { provider } = setupProvider(stdout$);
+    const ctx = createTestRunContext();
+    const messages: ModelMessage[] = [{ role: "user", content: "Найди задачи" }];
+
+    const emissionsPromise = firstValueFrom(provider.exec(ctx, messages).pipe(toArray()));
+    await Promise.resolve();
+
+    // 1. Agent emits explanation text chunks before tool call
+    stdout$.next(
+      `${JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_index: 1,
+          state: "ACTIVE",
+          step_type: "agent_response",
+          text_delta: "Получение списка объектов ",
+        },
+      })}\n`,
+    );
+
+    stdout$.next(
+      `${JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_index: 1,
+          state: "DONE",
+          step_type: "agent_response",
+          text_delta: "и задач в спейсе\n",
+        },
+      })}\n`,
+    );
+
+    // 2. Active tool call
+    stdout$.next(
+      `${JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_index: 2,
+          state: "ACTIVE",
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_info: { parameters: { CommandLine: "curl localhost/objects" } },
+        },
+      })}\n`,
+    );
+
+    // 3. Tool completes
+    stdout$.next(
+      `${JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_index: 2,
+          state: "DONE",
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_info: { output: '{"total": 5}' },
+        },
+      })}\n`,
+    );
+
+    // 4. Final agent response stream
+    stdout$.next(
+      `${JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_index: 3,
+          state: "ACTIVE",
+          step_type: "agent_response",
+          text_delta: "Найдено 5 задач. ",
+        },
+      })}\n`,
+    );
+
+    stdout$.next(
+      `${JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_index: 3,
+          state: "DONE",
+          step_type: "agent_response",
+          text_delta: "Все задачи актуальны.",
+        },
+      })}\n`,
+    );
+
+    // 5. Result event (with aggregated/dirty response which must be ignored!)
+    stdout$.next(
+      `${JSON.stringify({
+        event: "result",
+        result: {
+          status: "SUCCESS",
+          response:
+            "Получение списка объектов и задач в спейсе\nНайдено 5 задач. Все задачи актуальны.",
+        },
+      })}\n`,
+    );
+    stdout$.complete();
+
+    const result = await emissionsPromise;
+    expect(result).toHaveLength(3);
+
+    // First emission: tool call with accumulated preceding comment as a TextPart
+    expect(result[0]).toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "Получение списка объектов и задач в спейсе",
+        },
+        {
+          type: "tool-call",
+          toolCallId: "call_2",
+          toolName: "run_command",
+          input: { CommandLine: "curl localhost/objects" },
+        },
+      ],
+    });
+
+    // Second emission: tool result
+    expect(result[1]).toEqual({
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call_2",
+          toolName: "run_command",
+          output: { type: "text", value: '{"total": 5}' },
+        },
+      ],
+    });
+
+    // Third emission: clean final assistant response from accumulated buffer (ignoring result.response)
+    expect(result[2]).toEqual({
+      role: "assistant",
+      content: "Найдено 5 задач. Все задачи актуальны.",
+    });
   });
 });

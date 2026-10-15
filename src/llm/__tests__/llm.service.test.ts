@@ -143,4 +143,44 @@ describe("LlmService (Unit Tests)", () => {
     expect(events).toHaveLength(0);
     expect(provider.capturedCtx).toBeUndefined();
   });
+
+  it("6. Assistant tool-call with accompanying TextPart in content emits LlmAction", async () => {
+    const provider = new MockLlmProvider();
+    const service = new LlmService([provider]);
+    const ctx = createContext();
+
+    const streamPromise = firstValueFrom(service.run(ctx, []).pipe(toArray()));
+    await Promise.resolve();
+
+    provider.responseSubject.next({
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "Поиск документов",
+        },
+        {
+          type: "tool-call",
+          toolCallId: "call_1",
+          toolName: "search",
+          input: {},
+        },
+      ],
+    });
+
+    provider.responseSubject.next({
+      role: "assistant",
+      content: "Готово",
+    });
+
+    provider.responseSubject.complete();
+    const events = await streamPromise;
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toBeInstanceOf(LlmAction);
+    expect((events[0] as LlmAction).detail).toBe("Поиск документов");
+
+    expect(events[1]).toBeInstanceOf(LlmResponse);
+    expect((events[1] as LlmResponse).text).toBe("Готово");
+  });
 });
