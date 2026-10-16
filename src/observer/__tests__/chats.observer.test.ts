@@ -64,7 +64,10 @@ describe("ChatsObserver (Unit Tests)", () => {
     } as unknown as AnytypeService;
 
     const llmFake = {
-      run: mock(options.llmHandler ?? (() => of(LlmResponse.create("  Bot reply  ")))),
+      run: mock(
+        options.llmHandler ??
+          (() => of<LlmEvent>({ type: "response", data: LlmResponse.create("  Bot reply  ") })),
+      ),
     } as unknown as LlmService;
 
     const configMock = makeAppConfig({
@@ -270,10 +273,13 @@ describe("ChatsObserver (Unit Tests)", () => {
   it("7. LlmAction Streaming: intermediate actions edit progress message with italic marks", async () => {
     const { ready, pushEvent, anytypeFake } = setup({
       llmHandler: () =>
-        of(
-          LlmAction.create("Tool 1 called"),
-          LlmAction.create("Tool 2 called"),
-          LlmResponse.create("Final output"),
+        of<LlmEvent>(
+          { type: "actions", data: [LlmAction.create("Tool 1 called")] },
+          {
+            type: "actions",
+            data: [LlmAction.create("Tool 1 called"), LlmAction.create("Tool 2 called")],
+          },
+          { type: "response", data: LlmResponse.create("Final output") },
         ),
     });
 
@@ -554,7 +560,7 @@ describe("ChatsObserver (Unit Tests)", () => {
 
   it("16. Empty response: blank LLM response triggers error edit, not hanging working indicator", async () => {
     const { ready, pushEvent, anytypeFake } = setup({
-      llmHandler: () => of(LlmResponse.create("   ")),
+      llmHandler: () => of<LlmEvent>({ type: "response", data: LlmResponse.create("   ") }),
     });
 
     await ready();
@@ -573,7 +579,7 @@ describe("ChatsObserver (Unit Tests)", () => {
 
   it("17. Incomplete LLM stream: stream with only LlmActions completing without LlmResponse triggers error edit", async () => {
     const { ready, pushEvent, anytypeFake } = setup({
-      llmHandler: () => of(LlmAction.create("Thinking...")),
+      llmHandler: () => of<LlmEvent>({ type: "actions", data: [LlmAction.create("Thinking...")] }),
     });
 
     await ready();

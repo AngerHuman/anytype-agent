@@ -6,11 +6,60 @@ import type { ChatMessage } from "../client";
 import { LLM_PROVIDERS } from "./llm.constants";
 import { LlmAction, type LlmEvent, LlmProvider, LlmResponse, type LlmRunContext } from "./types";
 
+class LlmStreamAggregator {
+  private actions: LlmAction[] = [];
+
+  handleMessage(message: ModelMessage): LlmEvent | null {
+    if (message.role === "assistant") {
+      if (Array.isArray(message.content)) {
+        const hasToolCalls = message.content.some((p) => p.type === "tool-call");
+
+        if (hasToolCalls) {
+          this.actions = [...this.actions, LlmAction.create(message)];
+          return { type: "actions", data: this.actions };
+        }
+
+        const textPart = message.content.find((p) => p.type === "text");
+        if (
+          textPart &&
+          "text" in textPart &&
+          typeof textPart.text === "string" &&
+          textPart.text.trim()
+        ) {
+          return { type: "response", data: LlmResponse.create(textPart.text) };
+        }
+      }
+
+      if (isString(message.content)) {
+        return { type: "response", data: LlmResponse.create(message.content) };
+      }
+    }
+
+    if (message.role === "tool") {
+      let updated = false;
+      const nextActions = this.actions.map((act) => {
+        const next = act.update(message);
+        if (next) {
+          updated = true;
+          return next;
+        }
+        return act;
+      });
+
+      if (updated) {
+        this.actions = nextActions;
+        return { type: "actions", data: this.actions };
+      }
+    }
+
+    return null;
+  }
+}
+
 @Injectable()
 export class LlmService {
   constructor(@Inject(LLM_PROVIDERS) private readonly providers: LlmProvider[]) {}
 
-  //TODO: return Observable<[LlmAction[], LlmResponse | null]>
   run(ctx: LlmRunContext, messages: ChatMessage[]): Observable<LlmEvent> {
     return defer(() => {
       if (ctx.abort.aborted) return EMPTY;
@@ -23,20 +72,10 @@ export class LlmService {
       if (!targetProvider) throw new Error("No LLM provider available");
 
       // 3. Вызываем провайдер: передаем контекст и чистую историю
+      const aggregator = new LlmStreamAggregator();
       return targetProvider.exec(ctx, history).pipe(
-        map((response) => {
-          if (response.role === "assistant") {
-            if (Array.isArray(response.content)) {
-              const textPart = response.content.find((p) => p.type === "text");
-              if (textPart?.text.trim()) return LlmAction.create(textPart.text.trim());
-            }
-
-            if (isString(response.content)) return LlmResponse.create(response.content);
-          }
-
-          if (response.role === "tool") return LlmAction.create(JSON.stringify(response.content));
-        }),
-        filter((event): event is LlmEvent => event !== undefined),
+        map((message) => aggregator.handleMessage(message)),
+        filter((event): event is LlmEvent => event !== null),
       );
     });
   }

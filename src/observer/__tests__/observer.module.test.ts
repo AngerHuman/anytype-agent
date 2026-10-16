@@ -49,7 +49,7 @@ describe("ObserverModule (Integration Tests via Nest Test)", () => {
   beforeAll(async () => {
     // Mock LLM calls prior to compile() to avoid triggering real SSH/CLI
     runSpy = spyOn(LlmService.prototype, "run").mockImplementation(() =>
-      of(LlmResponse.create("  Bot reply  ")),
+      of({ type: "response", data: LlmResponse.create("  Bot reply  ") }),
     );
 
     spacesList = [

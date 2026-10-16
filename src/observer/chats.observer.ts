@@ -33,7 +33,7 @@ import type { ChatMessageAdded } from "../client/types";
 import { APP_CONFIG } from "../config/config.module";
 import type { AppConfig } from "../config/config.schema";
 import { LlmService } from "../llm/llm.service";
-import { LlmAction, LlmEmptyResponseError, type LlmEvent, LlmResponse } from "../llm/types";
+import { LlmAction, LlmEmptyResponseError, type LlmEvent } from "../llm/types";
 import { AbstractObserver, type ObserverFactory } from "./types";
 
 @Injectable()
@@ -183,6 +183,27 @@ export class ChatsObserver extends AbstractObserver {
     );
   }
 
+  private formatAction(action: LlmAction): string {
+    const total = action.callIds.size;
+    const pending = action.pendingIds.size;
+    const completed = total - pending;
+
+    let badge = "";
+    if (action.status === "error") {
+      if (total > 1) {
+        badge = completed > 0 ? `⚠️ [${completed}/${total}]` : `❌ [${completed}/${total}]`;
+      } else {
+        badge = "❌ [Error]";
+      }
+    } else if (action.status === "done") {
+      badge = total > 1 ? `✅ [${total}/${total}]` : "✅ [Done]";
+    } else {
+      badge = total > 1 ? `⏳ [${completed}/${total}]` : "⏳ [Pending]";
+    }
+
+    return `${badge} ${action.comment}`.trim();
+  }
+
   private processLlmRun(
     chatId: string,
     history: ChatMessage[],
@@ -203,30 +224,28 @@ export class ChatsObserver extends AbstractObserver {
       )
       .pipe(
         this.requireLlmResponse(),
-        scan<LlmEvent, { event: LlmEvent; text: string }>(
-          (acc, event) => {
-            if (event instanceof LlmAction) {
-              const text = acc.text ? `${acc.text}\n${event.detail}` : event.detail;
-              return { event, text };
+        concatMap((event) => {
+          switch (event.type) {
+            case "actions": {
+              const lines = event.data.map((act) => this.formatAction(act));
+              const progressText = lines.length > 0 ? lines.join("\n") : INITIAL_PROGRESS_TEXT;
+              return this.editProgressMessage(chatId, progressId, progressText).pipe(
+                catchError(() => EMPTY),
+              );
             }
-            return { event, text: acc.text };
-          },
-          { event: null as unknown as LlmEvent, text: INITIAL_PROGRESS_TEXT },
-        ),
-        filter((state) => state.event !== null),
-        concatMap(({ event, text }) => {
-          if (event instanceof LlmAction)
-            return this.editProgressMessage(chatId, progressId, text).pipe(catchError(() => EMPTY));
 
-          const trimmed = event.text.trim();
-          if (!trimmed) throw new LlmEmptyResponseError();
+            case "response": {
+              const trimmed = event.data.text.trim();
+              if (!trimmed) throw new LlmEmptyResponseError();
 
-          return this.request$(() =>
-            this.anytype.addChatMessage(this.spaceId, chatId, {
-              text: trimmed,
-              reply_to_message_id: triggerId,
-            }),
-          ).pipe(concatMap(() => this.deleteProgressMessage(chatId, progressId)));
+              return this.request$(() =>
+                this.anytype.addChatMessage(this.spaceId, chatId, {
+                  text: trimmed,
+                  reply_to_message_id: triggerId,
+                }),
+              ).pipe(concatMap(() => this.deleteProgressMessage(chatId, progressId)));
+            }
+          }
         }),
       );
   }
@@ -236,7 +255,7 @@ export class ChatsObserver extends AbstractObserver {
       merge(
         shared$,
         shared$.pipe(
-          filter((e) => e instanceof LlmResponse),
+          filter((e) => e.type === "response"),
           throwIfEmpty(() => new LlmEmptyResponseError()),
           ignoreElements(),
         ),
