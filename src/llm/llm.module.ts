@@ -1,3 +1,4 @@
+import { parse } from "node:path";
 import { Module } from "@nestjs/common";
 import { ClientModule } from "../client";
 import { AnytypeProxy } from "../client/anytype.proxy";
@@ -7,6 +8,7 @@ import type { SshClient } from "../ssh/ssh.client";
 import { SshModule } from "../ssh/ssh.module";
 import { SshService } from "../ssh/ssh.service";
 import { AgyCliProvider } from "./cli/agy";
+import { OpenCodeCliProvider } from "./cli/opencode";
 import { LLM_PROVIDERS } from "./llm.constants";
 import { LlmService } from "./llm.service";
 
@@ -36,16 +38,19 @@ import { LlmService } from "./llm.service";
                 if (remotePort) port = remotePort;
               }
 
-              if (provider.CLI.endsWith("agy")) {
-                if (!spawner) throw new Error("Local spawner not implemented yet");
+              if (!spawner) throw new Error("Local spawner not implemented yet");
 
-                return new AgyCliProvider(
-                  spawner,
-                  config,
-                  proxy,
-                  { port, docs: proxy.routesDoc },
-                  provider.CLI,
-                );
+              const binaryName = parse(provider.CLI).name.toLowerCase();
+              const apiParams = { port, docs: proxy.routesDoc };
+              const cliParams = { binaryPath: provider.CLI, model: provider.MODEL };
+
+              switch (binaryName) {
+                case "agy":
+                  return new AgyCliProvider(spawner, config, proxy, apiParams, provider.CLI);
+                case "opencode":
+                  return new OpenCodeCliProvider(spawner, config, proxy, apiParams, cliParams);
+                default:
+                  throw new Error(`Unsupported CLI provider binary: ${provider.CLI}`);
               }
             }
           }),

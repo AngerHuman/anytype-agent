@@ -19,9 +19,16 @@ services:
       - ANYTYPE__BOT_NAME=${ANYTYPE_BOT_NAME}
       - ANYTYPE__API_KEY=${ANYTYPE_API_KEY}
 
-      - LLM__NAME=agy-local
+      # - LLM__NAME=agy-local
+      # - LLM__MODE=cli
+      # - LLM__CLI=/Users/${HOST_SSH_USER}/.local/bin/agy
+      # - LLM__SSH=ssh://${HOST_SSH_USER}@host.docker.internal:22
+      # - LLM__SSH_KEY=/keys/id_ed25519
+
+      - LLM__NAME=opencode-local
       - LLM__MODE=cli
-      - LLM__CLI=/Users/hatgor/.local/bin/agy
+      - LLM__CLI=/Users/${HOST_SSH_USER}/.bun/bin/opencode
+      - LLM__MODEL=opencode-go/glm-5.3-flash
       - LLM__SSH=ssh://${HOST_SSH_USER}@host.docker.internal:22
       - LLM__SSH_KEY=/keys/id_ed25519
     volumes:

@@ -14,6 +14,11 @@ export interface ApiParams {
   port: number;
 }
 
+export interface CliParams {
+  binaryPath: string;
+  model?: string;
+}
+
 export abstract class LlmCliProvider extends LlmProvider {
   public readonly mode: "cli" = "cli";
 
@@ -93,6 +98,90 @@ export abstract class LlmCliProvider extends LlmProvider {
       if (oldestKey) this.history.delete(oldestKey);
     }
     this.history.set(key, messages);
+  }
+
+  protected abstract readonly cliName: string;
+
+  protected safeParseLine<T = unknown>(line: string): T | null {
+    try {
+      return JSON.parse(line) as T;
+    } catch {
+      this.logger.debug(`Non-JSON stdout: ${line}`);
+      return null;
+    }
+  }
+
+  protected logEmittedMessage(msg: ModelMessage): void {
+    if (!Array.isArray(msg.content)) return;
+
+    for (const part of msg.content) {
+      if (part.type === "tool-call") {
+        const argsPreview = JSON.stringify(part.input).slice(0, 120);
+        this.logger.log(`🔧 ${this.cliName} tool call: ${part.toolName}(${argsPreview})`);
+      } else if (part.type === "tool-result") {
+        const isErr = part.output.type === "error-text";
+        const stateLabel = isErr ? "ERROR" : "DONE";
+        const outPreview =
+          part.output.type === "error-text"
+            ? part.output.value
+            : JSON.stringify(part.output).slice(0, 120);
+        this.logger.log(
+          `⚙️ ${this.cliName} tool result [${stateLabel}]: ${part.toolName} -> ${outPreview}`,
+        );
+      }
+    }
+  }
+
+  protected serializeMessagesToPrompt(messages: ModelMessage[]): string {
+    if (messages.length === 0) return "";
+    if (messages.length === 1 && typeof messages[0]?.content === "string") {
+      return messages[0].content;
+    }
+
+    return messages
+      .map((msg) => {
+        let contentStr = "";
+        if (typeof msg.content === "string") {
+          contentStr = msg.content;
+        } else if (Array.isArray(msg.content)) {
+          contentStr = msg.content
+            .map((part) => {
+              if (part.type === "text") return part.text;
+              if (part.type === "tool-call") {
+                return `[Tool Call: ${part.toolName} (ID: ${part.toolCallId})] args: ${JSON.stringify(part.input)}`;
+              }
+              if (part.type === "tool-result") {
+                let isError = false;
+                let outVal = "";
+                switch (part.output.type) {
+                  case "text":
+                    outVal = part.output.value;
+                    break;
+                  case "error-text":
+                    isError = true;
+                    outVal = part.output.value;
+                    break;
+                  case "json":
+                    outVal = JSON.stringify(part.output.value);
+                    break;
+                  case "execution-denied":
+                    isError = true;
+                    outVal = `Execution denied: ${part.output.reason ?? "permission rejected"}`;
+                    break;
+                }
+                return `[Tool Result: ${part.toolName} (ID: ${part.toolCallId})] ${isError ? "ERROR: " : ""}${outVal}`;
+              }
+              if (part.type === "reasoning") {
+                return `[Reasoning]: ${part.text}`;
+              }
+              return "";
+            })
+            .filter(Boolean)
+            .join("\n");
+        }
+        return `[${msg.role.toUpperCase()}]:\n${contentStr}`;
+      })
+      .join("\n\n");
   }
 
   protected buildHistoryKey(ctx: LlmRunContext, targetId?: string): string {

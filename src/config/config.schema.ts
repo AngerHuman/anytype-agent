@@ -28,6 +28,7 @@ export const LlmCli = Type.Object({
   NAME: Type.String({ minLength: 1, default: "default" }),
   MODE: Type.Literal("cli"),
   CLI: Type.String({ minLength: 1 }),
+  MODEL: Type.Optional(Type.String({ minLength: 1 })),
   SSH: Type.Optional(Type.String({ minLength: 1 })),
   SSH_KEY: Type.Optional(Type.String({ minLength: 1 })),
 });
