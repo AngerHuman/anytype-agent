@@ -1,7 +1,8 @@
 import "reflect-metadata";
 import { describe, expect, it, mock } from "bun:test";
 import { defer, Observable, of, Subject } from "rxjs";
-import type { AnytypeService, Chat, ChatMessage } from "../../client";
+import type { AnytypeService } from "../../client/anytype.service";
+import type { Chat, ChatMessage } from "../../client/schema";
 import type { ChatEvent } from "../../client/types";
 import { makeAppConfig } from "../../config/__tests__/fixtures";
 import type { LlmService } from "../../llm/llm.service";

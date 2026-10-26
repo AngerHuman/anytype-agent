@@ -15,7 +15,7 @@ export class AnytypeClient {
     private readonly logger: Logger,
     readonly baseUrl: string,
     private readonly apiKey: string,
-    private readonly apiVersion: string = "2025-11-08",
+    private readonly apiVersion: string,
   ) {}
 
   async request<T extends TSchema>(
@@ -220,10 +220,14 @@ export class AnytypeClient {
   static async factory(config: AppConfig) {
     const log = new Logger("AnytypeClient");
     const apiUrl = config.ANYTYPE.API_URL;
-    const apiKey = config.ANYTYPE.API_KEY;
 
     log.log(`Initializing Anytype client for ${apiUrl}...`);
-    const client = new AnytypeClient(log, apiUrl.replace(/\/$/, ""), apiKey);
+    const client = new AnytypeClient(
+      log,
+      apiUrl.replace(/\/$/, ""),
+      config.ANYTYPE.API_KEY,
+      config.ANYTYPE.API_VERSION,
+    );
 
     // Block bootstrap until API is reachable and token is valid
     await client.checkHealth();

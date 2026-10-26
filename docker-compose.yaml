@@ -25,12 +25,18 @@ services:
       # - LLM__SSH=ssh://${HOST_SSH_USER}@host.docker.internal:22
       # - LLM__SSH_KEY=/keys/id_ed25519
 
-      - LLM__NAME=opencode-local
-      - LLM__MODE=cli
-      - LLM__CLI=/Users/${HOST_SSH_USER}/.bun/bin/opencode
-      - LLM__MODEL=opencode-go/glm-5.3-flash
-      - LLM__SSH=ssh://${HOST_SSH_USER}@host.docker.internal:22
-      - LLM__SSH_KEY=/keys/id_ed25519
+      # - LLM__NAME=opencode-local
+      # - LLM__MODE=cli
+      # - LLM__CLI=/Users/${HOST_SSH_USER}/.bun/bin/opencode
+      # - LLM__MODEL=opencode-go/glm-5.3-flash
+      # - LLM__SSH=ssh://${HOST_SSH_USER}@host.docker.internal:22
+      # - LLM__SSH_KEY=/keys/id_ed25519
+
+      - LLM__NAME=opencode-api
+      - LLM__MODE=api
+      - LLM__API_URL=${API_URL}
+      - LLM__API_KEY=${API_KEY}
+      - LLM__MODEL=glm-5.3-flash
     volumes:
       - ./src:/app/src
       - ~/.ssh/id_ed25519:/keys/id_ed25519:ro

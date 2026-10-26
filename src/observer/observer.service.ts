@@ -6,8 +6,8 @@ import {
   type OnModuleDestroy,
 } from "@nestjs/common";
 import { type Subscription, switchMap, timer } from "rxjs";
-import type { Member } from "../client";
 import { AnytypeService } from "../client/anytype.service";
+import type { Member } from "../client/schema";
 import { APP_CONFIG } from "../config/config.module";
 import type { AppConfig } from "../config/config.schema";
 import { OBSERVERS } from "./constants";

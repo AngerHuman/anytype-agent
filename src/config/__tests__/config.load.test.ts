@@ -17,6 +17,7 @@ describe("loadFromEnv (dotted env -> AppConfig)", () => {
       API_URL: "http://127.0.0.1:31012",
       BOT_NAME: "DevBot",
       API_KEY: "secret_token",
+      API_VERSION: "2025-11-08",
     });
     expect(config.LLM).toEqual([{ NAME: "default", MODE: "cli", CLI: "claude" }]);
   });

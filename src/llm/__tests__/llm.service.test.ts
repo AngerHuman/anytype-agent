@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { firstValueFrom, toArray } from "rxjs";
-import type { ChatMessage } from "../../client";
+import type { ChatMessage } from "../../client/schema";
 import { LlmService } from "../llm.service";
 import { LlmResponse, type LlmRunContext } from "../types";
 import { createTestRunContext, MockLlmProvider } from "./test.fixtures";

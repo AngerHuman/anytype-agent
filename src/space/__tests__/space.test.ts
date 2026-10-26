@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { Logger } from "@nestjs/common";
 import { firstValueFrom } from "rxjs";
-import { AnytypeClient, AnytypeService } from "../../client";
+import { AnytypeClient } from "../../client/anytype.client";
+import { AnytypeService } from "../../client/anytype.service";
 import { initSpaceOrchestrator, type SpaceContext, SpaceWorker } from "../index";
 
 describe("Space Module", () => {

@@ -1,7 +1,7 @@
 import "reflect-metadata";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { NestFactory } from "@nestjs/core";
-import { AnytypeService } from "../client";
+import { Test } from "@nestjs/testing";
+import { AnytypeService } from "../client/anytype.service";
 import { makeAppEnv } from "../config/__tests__/fixtures";
 import { APP_CONFIG } from "../config/config.module";
 import { LlmService } from "../llm/llm.service";
@@ -37,13 +37,18 @@ describe("AppModule boots (DI wiring)", () => {
 
   it("resolves the full DI graph at bootstrap", async () => {
     const { AppModule } = await import("../app.module");
-    const app = await NestFactory.createApplicationContext(AppModule, { logger: false });
 
-    expect(app.get(APP_CONFIG)).toBeDefined();
-    expect(app.get(AnytypeService)).toBeInstanceOf(AnytypeService);
-    expect(app.get(LlmService)).toBeInstanceOf(LlmService);
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+
+    await moduleRef.init();
+
+    expect(moduleRef.get(APP_CONFIG)).toBeDefined();
+    expect(moduleRef.get(AnytypeService)).toBeInstanceOf(AnytypeService);
+    expect(moduleRef.get(LlmService)).toBeInstanceOf(LlmService);
     expect(sshSpy).toHaveBeenCalledTimes(1);
 
-    await app.close();
+    await moduleRef.close();
   });
 });

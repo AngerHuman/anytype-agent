@@ -6,7 +6,11 @@ import { firstValueFrom } from "rxjs";
 import { Type } from "typebox";
 import { makeAppEnv } from "../../config/__tests__/fixtures";
 import { ConfigModule } from "../../config/config.module";
-import { ANYTYPE_CLIENT, AnytypeClient, AnytypeService, ChatMessage, ClientModule } from "../index";
+import { AnytypeClient } from "../anytype.client";
+import { AnytypeService } from "../anytype.service";
+import { ANYTYPE_CLIENT } from "../client.constants";
+import { ClientModule } from "../client.module";
+import type { ChatMessage } from "../schema";
 
 describe("Anytype Client & Service Layer (Separation of Concerns)", () => {
   const testLogger = new Logger("TestAnytypeClient");

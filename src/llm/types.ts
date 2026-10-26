@@ -1,14 +1,48 @@
 import { Logger } from "@nestjs/common";
 import type { ModelMessage } from "ai";
+import isString from "lodash/isString";
 import type { Observable } from "rxjs";
 
 export abstract class LlmProvider {
+  protected static readonly MAX_HISTORY_ENTRIES = 100;
+
   protected readonly logger = new Logger(this.constructor.name);
+  protected readonly history = new Map<string, ModelMessage[]>();
 
   abstract mode: "cli" | "api";
-  abstract process: unknown;
 
   abstract exec(ctx: LlmRunContext, messages: ModelMessage[]): Observable<ModelMessage>;
+
+  protected saveHistoryEntry(key: string, messages: ModelMessage[]): void {
+    if (this.history.has(key)) {
+      this.history.delete(key);
+    } else if (this.history.size >= LlmProvider.MAX_HISTORY_ENTRIES) {
+      const oldestKey = this.history.keys().next().value;
+      if (oldestKey) this.history.delete(oldestKey);
+    }
+    this.history.set(key, messages);
+  }
+
+  protected buildHistoryKey(ctx: LlmRunContext, targetId?: string): string {
+    return `${ctx.spaceId}-${ctx.chatId}-${ctx.botId}-${targetId ?? ctx.triggerId}`;
+  }
+
+  protected enrichHistoryWithToolCalls(
+    ctx: LlmRunContext,
+    history: ModelMessage[],
+  ): ModelMessage[] {
+    return history.flatMap((message) => {
+      const messageId = message.providerOptions?.message?.id;
+      if (!isString(messageId)) return message;
+
+      if (message.role !== "user") return message;
+
+      const toolCalls = this.history.get(this.buildHistoryKey(ctx, messageId));
+      if (!toolCalls) return message;
+
+      return [message, ...toolCalls];
+    });
+  }
 }
 
 export interface LlmRunContext {

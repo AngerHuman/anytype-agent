@@ -1,6 +1,6 @@
 import { defer, from, interval, merge, type Observable, of, timer } from "rxjs";
 import { catchError, filter, map, retry, switchMap } from "rxjs/operators";
-import type { AnytypeService } from "../client";
+import type { AnytypeService } from "../client/anytype.service";
 import type { SpaceContext, SpaceEvent } from "./schema";
 
 export * from "./schema";

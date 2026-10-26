@@ -1,7 +1,8 @@
 import "reflect-metadata";
 import { describe, expect, it, mock } from "bun:test";
 import { throwError } from "rxjs";
-import type { AnytypeService, Member } from "../../client";
+import type { AnytypeService } from "../../client/anytype.service";
+import type { Member } from "../../client/schema";
 import { makeAppConfig } from "../../config/__tests__/fixtures";
 import { ObserverService } from "../observer.service";
 import type { AbstractObserver, ObserverFactory } from "../types";

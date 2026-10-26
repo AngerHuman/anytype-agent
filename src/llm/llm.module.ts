@@ -1,12 +1,14 @@
 import { parse } from "node:path";
 import { Module } from "@nestjs/common";
-import { ClientModule } from "../client";
+import { AnytypeMcp } from "../client/anytype.mcp";
 import { AnytypeProxy } from "../client/anytype.proxy";
+import { ClientModule } from "../client/client.module";
 import { APP_CONFIG } from "../config/config.module";
 import type { AppConfig } from "../config/config.schema";
 import type { SshClient } from "../ssh/ssh.client";
 import { SshModule } from "../ssh/ssh.module";
 import { SshService } from "../ssh/ssh.service";
+import { LlmApiProvider } from "./api";
 import { AgyCliProvider } from "./cli/agy";
 import { OpenCodeCliProvider } from "./cli/opencode";
 import { LLM_PROVIDERS } from "./llm.constants";
@@ -17,10 +19,15 @@ import { LlmService } from "./llm.service";
   providers: [
     {
       provide: LLM_PROVIDERS,
-      inject: [APP_CONFIG, SshService, AnytypeProxy],
-      useFactory: (config: AppConfig, ssh: SshService, proxy: AnytypeProxy) => {
+      inject: [APP_CONFIG, SshService, AnytypeProxy, AnytypeMcp],
+      useFactory: (config: AppConfig, ssh: SshService, proxy: AnytypeProxy, mcp: AnytypeMcp) => {
         return Promise.allSettled(
           config.LLM.map(async (provider) => {
+            if (provider.MODE === "api") {
+              await mcp.start();
+              return new LlmApiProvider(mcp.client, config, provider);
+            }
+
             if (provider.MODE === "cli") {
               await proxy.start();
               let port = proxy.port;

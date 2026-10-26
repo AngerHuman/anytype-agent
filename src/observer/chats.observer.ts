@@ -27,8 +27,8 @@ import {
   timeout,
   timer,
 } from "rxjs";
-import type { ChatMessage } from "../client";
 import { AnytypeService } from "../client/anytype.service";
+import type { ChatMessage } from "../client/schema";
 import type { ChatMessageAdded } from "../client/types";
 import { APP_CONFIG } from "../config/config.module";
 import type { AppConfig } from "../config/config.schema";

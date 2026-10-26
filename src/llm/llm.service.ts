@@ -2,7 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import type { ModelMessage } from "ai";
 import isString from "lodash/isString";
 import { defer, EMPTY, filter, map, type Observable } from "rxjs";
-import type { ChatMessage } from "../client";
+import type { ChatMessage } from "../client/schema";
 import { LLM_PROVIDERS } from "./llm.constants";
 import { LlmAction, type LlmEvent, LlmProvider, LlmResponse, type LlmRunContext } from "./types";
 

@@ -6,6 +6,7 @@ TypeboxSettings.Set({ correctiveParse: true });
 export const AnytypeConfig = Type.Object({
   API_URL: Type.String({ minLength: 1 }),
   API_KEY: Type.String({ minLength: 1 }),
+  API_VERSION: Type.String({ minLength: 1, default: "2025-11-08" }),
   BOT_NAME: Type.String({ minLength: 1 }),
 });
 export type AnytypeConfig = Static<typeof AnytypeConfig>;

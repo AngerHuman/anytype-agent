@@ -1,5 +1,4 @@
 import type { ModelMessage } from "ai";
-import { isString } from "lodash";
 import { defer, finalize, type Observable, tap } from "rxjs";
 import type { AppConfig } from "../../config/config.schema";
 import { LlmProvider, type LlmRunContext } from "../types";
@@ -21,9 +20,6 @@ export interface CliParams {
 
 export abstract class LlmCliProvider extends LlmProvider {
   public readonly mode: "cli" = "cli";
-
-  protected static readonly MAX_HISTORY_ENTRIES = 100;
-  protected readonly history = new Map<string, ModelMessage[]>();
 
   protected abstract execInternal(
     messages: ModelMessage[],
@@ -88,16 +84,6 @@ export abstract class LlmCliProvider extends LlmProvider {
         }),
       );
     });
-  }
-
-  protected saveHistoryEntry(key: string, messages: ModelMessage[]): void {
-    if (this.history.has(key)) {
-      this.history.delete(key);
-    } else if (this.history.size >= LlmCliProvider.MAX_HISTORY_ENTRIES) {
-      const oldestKey = this.history.keys().next().value;
-      if (oldestKey) this.history.delete(oldestKey);
-    }
-    this.history.set(key, messages);
   }
 
   protected abstract readonly cliName: string;
@@ -182,26 +168,5 @@ export abstract class LlmCliProvider extends LlmProvider {
         return `[${msg.role.toUpperCase()}]:\n${contentStr}`;
       })
       .join("\n\n");
-  }
-
-  protected buildHistoryKey(ctx: LlmRunContext, targetId?: string): string {
-    return `${ctx.spaceId}-${ctx.chatId}-${ctx.botId}-${targetId ?? ctx.triggerId}`;
-  }
-
-  protected enrichHistoryWithToolCalls(
-    ctx: LlmRunContext,
-    history: ModelMessage[],
-  ): ModelMessage[] {
-    return history.flatMap((message) => {
-      const messageId = message.providerOptions?.message?.id;
-      if (!isString(messageId)) return message;
-
-      if (message.role !== "user") return message;
-
-      const toolCalls = this.history.get(this.buildHistoryKey(ctx, messageId));
-      if (!toolCalls) return message;
-
-      return [message, ...toolCalls];
-    });
   }
 }
