@@ -64,14 +64,12 @@ export class LlmService {
     return defer(() => {
       if (ctx.abort.aborted) return EMPTY;
 
-      // 1. Готовим чистые диалоговые сообщения
       const history = this.mapChatMessages(messages, ctx.botId);
 
-      // 2. Берем провайдер (в будущем тут фоллбек через catchError)
+      // TODO: Add provider fallback via catchError
       const targetProvider = this.providers[0];
       if (!targetProvider) throw new Error("No LLM provider available");
 
-      // 3. Вызываем провайдер: передаем контекст и чистую историю
       const aggregator = new LlmStreamAggregator();
       return targetProvider.exec(ctx, history).pipe(
         map((message) => aggregator.handleMessage(message)),

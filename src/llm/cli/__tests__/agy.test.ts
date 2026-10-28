@@ -73,7 +73,6 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
     );
     await Promise.resolve();
 
-    // Done tool
     stdout$.next(
       `${JSON.stringify({
         event: "step_update",
@@ -87,7 +86,6 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
       })}\n`,
     );
 
-    // Error tool
     stdout$.next(
       `${JSON.stringify({
         event: "step_update",
@@ -101,7 +99,6 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
       })}\n`,
     );
 
-    // Result
     stdout$.next(
       `${JSON.stringify({
         event: "result",
@@ -201,7 +198,7 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
     expect(spawnOpts?.signal).toBeDefined();
     expect(spawnOpts?.signal?.aborted).toBe(false);
 
-    // Unsubscribe from downstream while process is streaming
+    // Downstream cancellation aborts the underlying process
     sub.unsubscribe();
 
     expect(spawnOpts?.signal?.aborted).toBe(true);
@@ -233,7 +230,6 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
     const emissionsPromise = firstValueFrom(provider.exec(ctx, messages).pipe(toArray()));
     await Promise.resolve();
 
-    // 1. Agent emits explanation text chunks before tool call
     stdout$.next(
       `${JSON.stringify({
         event: "step_update",
@@ -258,7 +254,6 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
       })}\n`,
     );
 
-    // 2. Active tool call
     stdout$.next(
       `${JSON.stringify({
         event: "step_update",
@@ -272,7 +267,6 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
       })}\n`,
     );
 
-    // 3. Tool completes
     stdout$.next(
       `${JSON.stringify({
         event: "step_update",
@@ -286,7 +280,6 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
       })}\n`,
     );
 
-    // 4. Final agent response stream
     stdout$.next(
       `${JSON.stringify({
         event: "step_update",
@@ -311,7 +304,6 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
       })}\n`,
     );
 
-    // 5. Result event (with aggregated/dirty response which must be ignored!)
     stdout$.next(
       `${JSON.stringify({
         event: "result",
@@ -327,7 +319,6 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
     const result = await emissionsPromise;
     expect(result).toHaveLength(3);
 
-    // First emission: tool call with accumulated preceding comment as a TextPart
     expect(result[0]).toEqual({
       role: "assistant",
       content: [
@@ -344,7 +335,6 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
       ],
     });
 
-    // Second emission: tool result
     expect(result[1]).toEqual({
       role: "tool",
       content: [
@@ -357,7 +347,6 @@ describe("AgyCliProvider (Stream & Process Unit Tests)", () => {
       ],
     });
 
-    // Third emission: clean final assistant response from accumulated buffer (ignoring result.response)
     expect(result[2]).toEqual({
       role: "assistant",
       content: "Найдено 5 задач. Все задачи актуальны.",

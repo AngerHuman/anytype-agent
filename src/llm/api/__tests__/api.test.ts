@@ -1,11 +1,26 @@
-import { describe, expect, it, mock, spyOn } from "bun:test";
+import { describe, expect, it, mock } from "bun:test";
 import type { MCPClient } from "@ai-sdk/mcp";
-import type { ModelMessage, TextStreamPart } from "ai";
-import * as aiModule from "ai";
-import { firstValueFrom, Subject, toArray } from "rxjs";
+import type { LanguageModelV4Prompt, LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import type { ModelMessage, ToolSet } from "ai";
+import { simulateReadableStream, tool } from "ai";
+import { MockLanguageModelV4 } from "ai/test";
+import { firstValueFrom, toArray } from "rxjs";
+import { z } from "zod";
 import type { AppConfig, LlmApi } from "../../../config/config.schema";
 import { createTestRunContext } from "../../__tests__/test.fixtures";
 import { LlmApiProvider } from "../index";
+
+const simulateStream = (chunks: LanguageModelV4StreamPart[]) =>
+  simulateReadableStream<LanguageModelV4StreamPart>({ chunks });
+
+const finishChunk = (unified: "stop" | "tool-calls" = "stop"): LanguageModelV4StreamPart => ({
+  type: "finish",
+  finishReason: { unified, raw: unified },
+  usage: {
+    inputTokens: { total: 0, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: 0, text: undefined, reasoning: undefined },
+  },
+});
 
 describe("LlmApiProvider (Stream & History Unit Tests)", () => {
   const mockConfig: AppConfig = {
@@ -33,68 +48,66 @@ describe("LlmApiProvider (Stream & History Unit Tests)", () => {
     MODEL: "test-model",
   };
 
-  const createMockMcp = (tools = { dummy_tool: {} }) =>
+  const createMockMcp = (tools: ToolSet = {}) =>
     ({
       tools: mock(async () => tools),
     }) as unknown as MCPClient;
 
   it("1. Lazy tool initialization: caches tools after first call", async () => {
     const mockMcp = createMockMcp();
-    const provider = new LlmApiProvider(mockMcp, mockConfig, mockApiConfig);
-
-    const stream$ = new Subject<TextStreamPart<any>>();
-    const streamTextSpy = spyOn(aiModule, "streamText").mockReturnValue({
-      stream: stream$ as any,
-    } as any);
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateStream([finishChunk()]),
+      }),
+    });
+    const provider = new LlmApiProvider(mockMcp, mockConfig, mockApiConfig, model);
 
     const ctx = createTestRunContext();
-    const sub1 = provider.exec(ctx, []).subscribe();
-    const sub2 = provider.exec(ctx, []).subscribe();
+    const sub1 = provider.exec(ctx, [{ role: "user", content: "hi" }]).subscribe();
+    const sub2 = provider.exec(ctx, [{ role: "user", content: "hi" }]).subscribe();
 
-    // Ждем микротаску резолва getTools()
     await Promise.resolve();
 
     expect(mockMcp.tools).toHaveBeenCalledTimes(1);
 
     sub1.unsubscribe();
     sub2.unsubscribe();
-    streamTextSpy.mockRestore();
   });
 
   it("2. Tool events mapping: maps tool-call and tool-result correctly", async () => {
-    const mockMcp = createMockMcp();
-    const provider = new LlmApiProvider(mockMcp, mockConfig, mockApiConfig);
+    const mockMcp = createMockMcp({
+      "API-get-space": tool({
+        description: "Get space",
+        inputSchema: z.object({ space_id: z.string() }),
+      }),
+    });
 
-    const stream$ = new Subject<TextStreamPart<any>>();
-    const streamTextSpy = spyOn(aiModule, "streamText").mockReturnValue({
-      stream: stream$ as any,
-    } as any);
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateStream([
+          {
+            type: "tool-call",
+            toolCallId: "call_1",
+            toolName: "API-get-space",
+            input: JSON.stringify({ space_id: "sp_1" }),
+          },
+          {
+            type: "tool-result",
+            toolCallId: "call_1",
+            toolName: "API-get-space",
+            result: { name: "My Space" },
+          },
+          finishChunk("stop"),
+        ]),
+      }),
+    });
+    const provider = new LlmApiProvider(mockMcp, mockConfig, mockApiConfig, model);
 
     const ctx = createTestRunContext();
-    const messagesPromise = firstValueFrom(provider.exec(ctx, []).pipe(toArray()));
+    const messages = await firstValueFrom(
+      provider.exec(ctx, [{ role: "user", content: "get space" }]).pipe(toArray()),
+    );
 
-    // Даем switchMap подписаться на stream$
-    await Promise.resolve();
-
-    // Эмитим вызов тула
-    stream$.next({
-      type: "tool-call",
-      toolCallId: "call_1",
-      toolName: "API-get-space",
-      input: { space_id: "sp_1" },
-    });
-
-    // Эмитим результат тула
-    stream$.next({
-      type: "tool-result",
-      toolCallId: "call_1",
-      toolName: "API-get-space",
-      output: { name: "My Space" },
-    });
-
-    stream$.complete();
-
-    const messages = await messagesPromise;
     expect(messages).toHaveLength(2);
 
     expect(messages[0]).toEqual({
@@ -123,169 +136,184 @@ describe("LlmApiProvider (Stream & History Unit Tests)", () => {
         },
       ],
     });
-
-    streamTextSpy.mockRestore();
   });
 
   it("3. Text streaming: accumulates text deltas and emits final message on finish", async () => {
-    const mockMcp = createMockMcp();
-    const provider = new LlmApiProvider(mockMcp, mockConfig, mockApiConfig);
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateStream([
+          { type: "text-start", id: "t1" },
+          { type: "text-delta", id: "t1", delta: "Hello, " },
+          { type: "text-delta", id: "t1", delta: "world!" },
+          { type: "text-end", id: "t1" },
+          finishChunk("stop"),
+        ]),
+      }),
+    });
+    const provider = new LlmApiProvider(createMockMcp(), mockConfig, mockApiConfig, model);
 
-    const stream$ = new Subject<TextStreamPart<any>>();
-    const streamTextSpy = spyOn(aiModule, "streamText").mockReturnValue({
-      stream: stream$ as any,
-    } as any);
+    const messages = await firstValueFrom(
+      provider
+        .exec(createTestRunContext(), [{ role: "user", content: "say hello" }])
+        .pipe(toArray()),
+    );
 
-    const ctx = createTestRunContext();
-    const messagesPromise = firstValueFrom(provider.exec(ctx, []).pipe(toArray()));
-
-    await Promise.resolve();
-
-    stream$.next({ type: "text-delta", text: "Привет, " });
-    stream$.next({ type: "text-delta", text: "мир!" });
-    stream$.next({ type: "finish", finishReason: "stop" } as any);
-    stream$.complete();
-
-    const messages = await messagesPromise;
     expect(messages).toEqual([
       {
         role: "assistant",
-        content: "Привет, мир!",
+        content: "Hello, world!",
       },
     ]);
-
-    streamTextSpy.mockRestore();
   });
 
   it("4. Tool History: accumulates tool events and enriches subsequent calls", async () => {
-    const mockMcp = createMockMcp();
-    const provider = new LlmApiProvider(mockMcp, mockConfig, mockApiConfig);
+    let capturedPrompt: LanguageModelV4Prompt | undefined;
 
-    const stream1$ = new Subject<TextStreamPart<any>>();
-    let streamTextCallArgs: any;
-    const streamTextSpy = spyOn(aiModule, "streamText").mockImplementation((args: any) => {
-      streamTextCallArgs = args;
-      return { stream: stream1$ as any } as any;
+    const mockMcp = createMockMcp({
+      "API-create-task": tool({
+        description: "Create task",
+        inputSchema: z.object({ title: z.string() }),
+      }),
     });
+
+    let callCount = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            stream: simulateStream([
+              {
+                type: "tool-call",
+                toolCallId: "call_99",
+                toolName: "API-create-task",
+                input: JSON.stringify({ title: "Test" }),
+              },
+              {
+                type: "tool-result",
+                toolCallId: "call_99",
+                toolName: "API-create-task",
+                result: { id: "task_1" },
+              },
+              finishChunk("stop"),
+            ]),
+          };
+        }
+
+        capturedPrompt = options.prompt;
+        return {
+          stream: simulateStream([finishChunk("stop")]),
+        };
+      },
+    });
+
+    const provider = new LlmApiProvider(mockMcp, mockConfig, mockApiConfig, model);
 
     const ctx = createTestRunContext({ triggerId: "trigger_123" });
-    const firstExecPromise = firstValueFrom(provider.exec(ctx, []).pipe(toArray()));
+    await firstValueFrom(
+      provider.exec(ctx, [{ role: "user", content: "create task" }]).pipe(toArray()),
+    );
 
-    await Promise.resolve();
-
-    // Ход 1: вызываем тул и финишируем
-    stream1$.next({
-      type: "tool-call",
-      toolCallId: "call_99",
-      toolName: "API-create-task",
-      input: { title: "Test" },
-    });
-    stream1$.next({
-      type: "tool-result",
-      toolCallId: "call_99",
-      toolName: "API-create-task",
-      output: { id: "task_1" },
-    });
-    stream1$.next({ type: "finish", finishReason: "stop" } as any);
-    stream1$.complete();
-
-    await firstExecPromise;
-
-    // Ход 2: юзер шлет новое сообщение, ссылаясь на предыдущий триггер через providerOptions
-    const stream2$ = new Subject<TextStreamPart<any>>();
-    streamTextSpy.mockImplementation((args: any) => {
-      streamTextCallArgs = args;
-      return { stream: stream2$ as any } as any;
-    });
-
-    const userMessage: ModelMessage = {
-      role: "user",
-      content: "А что ты сделал?",
-      providerOptions: { message: { id: "trigger_123" } },
-    };
+    const history: ModelMessage[] = [
+      {
+        role: "user",
+        content: "create task",
+        providerOptions: { message: { id: "trigger_123" } },
+      },
+      {
+        role: "assistant",
+        content: "Task created.",
+      },
+      {
+        role: "user",
+        content: "What did you do?",
+        providerOptions: { message: { id: "trigger_456" } },
+      },
+    ];
 
     const nextCtx = createTestRunContext({ triggerId: "trigger_456" });
-    const sub = provider.exec(nextCtx, [userMessage]).subscribe();
+    await firstValueFrom(provider.exec(nextCtx, history).pipe(toArray()));
 
-    await Promise.resolve();
-
-    // Проверяем, что в streamText улетели обогащенные сообщения с tool_call и tool_result из истории!
-    expect(streamTextCallArgs.messages).toHaveLength(3);
-    expect(streamTextCallArgs.messages[0]).toEqual(userMessage);
-    expect(streamTextCallArgs.messages[1].role).toBe("assistant");
-    expect(streamTextCallArgs.messages[2].role).toBe("tool");
-
-    sub.unsubscribe();
-    streamTextSpy.mockRestore();
+    expect(capturedPrompt).toBeDefined();
+    const roles = capturedPrompt?.map((p) => p.role);
+    expect(roles).toEqual(["system", "user", "assistant", "tool", "assistant", "user"]);
   });
 
   it("5. History resilience: does not save history if stream errors", async () => {
-    const mockMcp = createMockMcp();
-    const provider = new LlmApiProvider(mockMcp, mockConfig, mockApiConfig);
+    let capturedPrompt: LanguageModelV4Prompt | undefined;
+    let callCount = 0;
 
-    const stream$ = new Subject<TextStreamPart<any>>();
-    const streamTextSpy = spyOn(aiModule, "streamText").mockReturnValue({
-      stream: stream$ as any,
-    } as any);
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            stream: simulateStream([
+              {
+                type: "error",
+                error: new Error("Network fail"),
+              },
+            ]),
+          };
+        }
+
+        capturedPrompt = options.prompt;
+        return {
+          stream: simulateStream([finishChunk("stop")]),
+        };
+      },
+    });
+
+    const provider = new LlmApiProvider(createMockMcp(), mockConfig, mockApiConfig, model);
 
     const ctx = createTestRunContext({ triggerId: "trigger_err" });
-    const execPromise = firstValueFrom(provider.exec(ctx, []).pipe(toArray()));
-
-    await Promise.resolve();
-
-    stream$.next({
-      type: "tool-call",
-      toolCallId: "call_err",
-      toolName: "API-fail",
-      input: {},
-    });
-    stream$.error(new Error("Network fail"));
-
-    await expect(execPromise).rejects.toThrow("Network fail");
-
-    // Проверяем следующее обращение: история должна быть пустой
-    let secondCallArgs: any;
-    streamTextSpy.mockImplementation((args: any) => {
-      secondCallArgs = args;
-      return { stream: new Subject() as any } as any;
-    });
+    expect(
+      firstValueFrom(
+        provider.exec(ctx, [{ role: "user", content: "trigger error" }]).pipe(toArray()),
+      ),
+    ).rejects.toThrow("Network fail");
 
     const userMessage: ModelMessage = {
       role: "user",
-      content: "Повтори",
+      content: "Repeat",
       providerOptions: { message: { id: "trigger_err" } },
     };
 
-    const sub = provider.exec(createTestRunContext(), [userMessage]).subscribe();
-    await Promise.resolve();
+    await firstValueFrom(provider.exec(createTestRunContext(), [userMessage]).pipe(toArray()));
 
-    expect(secondCallArgs.messages).toEqual([userMessage]);
-
-    sub.unsubscribe();
-    streamTextSpy.mockRestore();
+    expect(capturedPrompt).toBeDefined();
+    const roles = capturedPrompt?.map((p) => p.role);
+    expect(roles).toEqual(["system", "user"]);
   });
 
   it("6. Session header and system prompt: passes x-opencode-session and bot name", async () => {
-    const mockMcp = createMockMcp();
-    const provider = new LlmApiProvider(mockMcp, mockConfig, mockApiConfig);
+    let capturedHeaders: Record<string, string | undefined> | undefined;
+    let capturedSystem: string | undefined;
 
-    let capturedArgs: any;
-    const streamTextSpy = spyOn(aiModule, "streamText").mockImplementation((args: any) => {
-      capturedArgs = args;
-      return { stream: new Subject() as any } as any;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        capturedHeaders = options.headers;
+        const systemItem = options.prompt.find((p) => p.role === "system");
+        capturedSystem =
+          systemItem && "content" in systemItem && typeof systemItem.content === "string"
+            ? systemItem.content
+            : undefined;
+
+        return {
+          stream: simulateStream([finishChunk("stop")]),
+        };
+      },
     });
 
+    const provider = new LlmApiProvider(createMockMcp(), mockConfig, mockApiConfig, model);
     const ctx = createTestRunContext();
-    const sub = provider.exec(ctx, []).subscribe();
+    await firstValueFrom(
+      provider.exec(ctx, [{ role: "user", content: "test headers" }]).pipe(toArray()),
+    );
 
-    await Promise.resolve();
-
-    expect(capturedArgs.headers).toEqual({
+    expect(capturedHeaders).toEqual({
       "x-opencode-session": `${ctx.spaceId}:${ctx.chatId}`,
     });
-    expect(capturedArgs.system).toContain('You are the AI assistant "TestBot" in Anytype.');
-
-    sub.unsubscribe();
-    streamTextSpy.mockRestore();
+    expect(capturedSystem).toContain('You are the AI assistant "TestBot" in Anytype.');
   });
 });

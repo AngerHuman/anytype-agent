@@ -112,7 +112,6 @@ describe("OpenCodeCliProvider (Stream & Process Unit Tests)", () => {
     );
     await Promise.resolve();
 
-    // Successful tool result
     stdout$.next(
       `${JSON.stringify({
         type: "tool_use",
@@ -131,7 +130,6 @@ describe("OpenCodeCliProvider (Stream & Process Unit Tests)", () => {
       })}\n`,
     );
 
-    // Error tool result
     stdout$.next(
       `${JSON.stringify({
         type: "tool_use",
@@ -154,7 +152,6 @@ describe("OpenCodeCliProvider (Stream & Process Unit Tests)", () => {
 
     const result = await emissionsPromise;
     expect(result).toHaveLength(4);
-    // Call 1
     expect(result[0]).toEqual({
       role: "assistant",
       content: [
@@ -166,7 +163,6 @@ describe("OpenCodeCliProvider (Stream & Process Unit Tests)", () => {
         },
       ],
     });
-    // Result 1
     expect(result[1]).toEqual({
       role: "tool",
       content: [
@@ -178,7 +174,6 @@ describe("OpenCodeCliProvider (Stream & Process Unit Tests)", () => {
         },
       ],
     });
-    // Call 2
     expect(result[2]).toEqual({
       role: "assistant",
       content: [
@@ -190,7 +185,6 @@ describe("OpenCodeCliProvider (Stream & Process Unit Tests)", () => {
         },
       ],
     });
-    // Result 2
     expect(result[3]).toEqual({
       role: "tool",
       content: [
@@ -319,7 +313,6 @@ describe("OpenCodeCliProvider (Stream & Process Unit Tests)", () => {
     const emissionsPromise = firstValueFrom(provider.exec(ctx, messages).pipe(toArray()));
     await Promise.resolve();
 
-    // 1. Text chunks before tool call
     stdout$.next(
       `${JSON.stringify({
         type: "text",
@@ -349,7 +342,6 @@ describe("OpenCodeCliProvider (Stream & Process Unit Tests)", () => {
       })}\n`,
     );
 
-    // 2. Tool use
     stdout$.next(
       `${JSON.stringify({
         type: "tool_use",
@@ -368,7 +360,6 @@ describe("OpenCodeCliProvider (Stream & Process Unit Tests)", () => {
       })}\n`,
     );
 
-    // 3. Step finish for tool calls
     stdout$.next(
       `${JSON.stringify({
         type: "step_finish",
@@ -384,7 +375,6 @@ describe("OpenCodeCliProvider (Stream & Process Unit Tests)", () => {
       })}\n`,
     );
 
-    // 4. Text chunk after tool call
     stdout$.next(
       `${JSON.stringify({
         type: "text",
@@ -400,7 +390,6 @@ describe("OpenCodeCliProvider (Stream & Process Unit Tests)", () => {
       })}\n`,
     );
 
-    // 5. Final step finish
     stdout$.next(
       `${JSON.stringify({
         type: "step_finish",

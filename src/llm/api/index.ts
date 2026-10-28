@@ -6,6 +6,8 @@ import {
   type LanguageModel,
   type ModelMessage,
   streamText,
+  type TextStreamPart,
+  type ToolSet,
 } from "ai";
 import {
   defer,
@@ -29,7 +31,6 @@ import { LlmProvider, type LlmRunContext } from "../types";
 
 export class LlmApiProvider extends LlmProvider {
   public readonly mode = "api";
-  protected readonly model: LanguageModel;
 
   protected readonly systemMessageRows: string[] = [];
 
@@ -39,15 +40,9 @@ export class LlmApiProvider extends LlmProvider {
     protected readonly mcp: MCPClient,
     protected readonly config: AppConfig,
     protected readonly apiConfig: ApiConfig,
+    protected readonly model: LanguageModel = LlmApiProvider.getModel(apiConfig),
   ) {
     super();
-
-    const provider = createOpenAICompatible({
-      name: "opencode",
-      baseURL: this.apiConfig.API_URL,
-      apiKey: this.apiConfig.API_KEY,
-    });
-    this.model = provider.chatModel(this.apiConfig.MODEL);
 
     this.systemMessageRows.push(
       `You are the AI assistant "${config.ANYTYPE.BOT_NAME}" in Anytype.`,
@@ -116,17 +111,18 @@ export class LlmApiProvider extends LlmProvider {
     });
   }
 
-  private getTypedStream(ctx: LlmRunContext, messages: ModelMessage[]) {
+  private getTypedStream(
+    ctx: LlmRunContext,
+    messages: ModelMessage[],
+  ): Observable<TextStreamPart<ToolSet>> {
     const sessionId = `${ctx.spaceId}:${ctx.chatId}`;
 
     return from(this.getTools()).pipe(
       switchMap((tools) => {
         const localAbort = new AbortController();
-        if (ctx.abort.aborted) {
-          localAbort.abort();
-        } else {
-          ctx.abort.addEventListener("abort", () => localAbort.abort(), { once: true });
-        }
+        const signal = ctx.abort.aborted
+          ? ctx.abort
+          : AbortSignal.any([ctx.abort, localAbort.signal]);
 
         const result = streamText({
           model: this.model,
@@ -134,7 +130,7 @@ export class LlmApiProvider extends LlmProvider {
           messages: this.enrichHistoryWithToolCalls(ctx, messages),
           tools,
           stopWhen: isLoopFinished(),
-          abortSignal: localAbort.signal,
+          abortSignal: signal,
           headers: {
             // TODO: think about more generic approach
             "x-opencode-session": sessionId,
@@ -142,12 +138,26 @@ export class LlmApiProvider extends LlmProvider {
         });
 
         return from(result.stream).pipe(
+          filter((part) => !!part && "type" in part),
+          tap((part) => {
+            if (part.type !== "error") return;
+
+            const err = part.error;
+            if (err instanceof Error) throw err;
+            if (err && typeof err === "object") {
+              const msg =
+                "message" in err && typeof err.message === "string"
+                  ? err.message
+                  : JSON.stringify(err);
+              throw new Error(msg);
+            }
+            throw new Error(String(err));
+          }),
           finalize(() => {
             localAbort.abort();
           }),
         );
       }),
-      filter((part) => !!part && "type" in part),
       share(),
     );
   }
@@ -167,5 +177,15 @@ export class LlmApiProvider extends LlmProvider {
       filter((text) => text.length > 0),
       map((content): ModelMessage => ({ role: "assistant", content })),
     );
+  }
+
+  private static getModel(apiConfig: ApiConfig): LanguageModel {
+    const provider = createOpenAICompatible({
+      name: apiConfig.NAME || "opencode",
+      baseURL: apiConfig.API_URL,
+      apiKey: apiConfig.API_KEY,
+    });
+
+    return provider.chatModel(apiConfig.MODEL);
   }
 }
