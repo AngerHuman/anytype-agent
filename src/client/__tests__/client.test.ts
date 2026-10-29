@@ -1,15 +1,20 @@
 import "reflect-metadata";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { Logger } from "@nestjs/common";
-import { ConfigModule } from "@nestjs/config";
 import { NestFactory } from "@nestjs/core";
 import { firstValueFrom } from "rxjs";
 import { Type } from "typebox";
-import { validateConfig } from "../../app.config";
-import { ANYTYPE_CLIENT, AnytypeClient, AnytypeService, ChatMessage, ClientModule } from "../index";
+import { makeAppEnv } from "../../config/__tests__/fixtures";
+import { ConfigModule } from "../../config/config.module";
+import { AnytypeClient } from "../anytype.client";
+import { AnytypeService } from "../anytype.service";
+import { ANYTYPE_CLIENT } from "../client.constants";
+import { ClientModule } from "../client.module";
+import type { ChatMessage } from "../schema";
 
 describe("Anytype Client & Service Layer (Separation of Concerns)", () => {
   const testLogger = new Logger("TestAnytypeClient");
+  const originalEnv = { ...process.env };
   const createTestClient = (
     baseUrl = "http://127.0.0.1:31012",
     apiKey = "secret-token-xyz",
@@ -24,6 +29,7 @@ describe("Anytype Client & Service Layer (Separation of Concerns)", () => {
 
   afterEach(() => {
     fetchSpy.mockRestore();
+    process.env = originalEnv;
   });
 
   describe("AnytypeClient (Low-Level Transport)", () => {
@@ -293,26 +299,17 @@ describe("Anytype Client & Service Layer (Separation of Concerns)", () => {
 
   describe("ClientModule DI with Async Factory Provider", () => {
     it("bootstraps ClientModule, performs healthcheck in useFactory, and provides ANYTYPE_CLIENT & AnytypeService", async () => {
-      process.env.ANYTYPE_API_URL = "http://127.0.0.1:31012";
-      process.env.ANYTYPE_BOT_NAME = "Bot";
-      process.env.ANYTYPE_API_KEY = "token123";
-      process.env.LLM_MODE = "host";
-      process.env.HOST_SSH_USER = "testuser";
-      process.env.HOST_SSH_KEY_PATH = "/keys/id_ed25519";
-      process.env.HOST_CLI_BIN = "claude";
+      Object.assign(
+        process.env,
+        makeAppEnv({ ANYTYPE__BOT_NAME: "Bot", ANYTYPE__API_KEY: "token123" }),
+      );
 
       fetchSpy.mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
 
       const app = await NestFactory.createApplicationContext(
         {
           module: class TestAppModule {},
-          imports: [
-            ConfigModule.forRoot({
-              isGlobal: true,
-              validate: validateConfig,
-            }),
-            ClientModule,
-          ],
+          imports: [ConfigModule, ClientModule],
         },
         { logger: false },
       );

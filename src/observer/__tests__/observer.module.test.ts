@@ -1,10 +1,10 @@
 import "reflect-metadata";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { ConfigModule } from "@nestjs/config";
 import { Test, type TestingModule } from "@nestjs/testing";
 import { of } from "rxjs";
-import { validateConfig } from "../../app.config";
-import { HostModelService } from "../../llm/host.model";
+import { makeAppConfig } from "../../config/__tests__/fixtures";
+import { APP_CONFIG, ConfigModule } from "../../config/config.module";
+import { LlmService } from "../../llm/llm.service";
 import { LlmResponse } from "../../llm/types";
 import { ObserverModule } from "../observer.module";
 import { ObserverService } from "../observer.service";
@@ -24,7 +24,6 @@ describe("ObserverModule (Integration Tests via Nest Test)", () => {
   let observerService: ObserverService;
   let internals: ObserverServiceInternals;
 
-  let initSpy: ReturnType<typeof spyOn>;
   let runSpy: ReturnType<typeof spyOn>;
   let fetchSpy: ReturnType<typeof spyOn>;
 
@@ -48,21 +47,9 @@ describe("ObserverModule (Integration Tests via Nest Test)", () => {
   };
 
   beforeAll(async () => {
-    process.env.ANYTYPE_API_URL = "http://127.0.0.1:31012";
-    process.env.ANYTYPE_BOT_NAME = "TestBot";
-    process.env.ANYTYPE_API_KEY = "secret_key_123";
-    process.env.LLM_MODE = "host";
-    process.env.HOST_SSH_USER = "testuser";
-    process.env.HOST_SSH_KEY_PATH = "/keys/id_ed25519";
-    process.env.HOST_CLI_BIN = "claude";
-    process.env.OBSERVER_DEBOUNCE_MS = "10";
-    process.env.OBSERVER_RETRY_DELAY_MS = "10";
-    process.env.OBSERVER_SCAN_INTERVAL_MS = "200";
-
     // Mock LLM calls prior to compile() to avoid triggering real SSH/CLI
-    initSpy = spyOn(HostModelService.prototype, "init").mockResolvedValue();
-    runSpy = spyOn(HostModelService.prototype, "run").mockImplementation(() =>
-      of(LlmResponse.create("  Bot reply  ")),
+    runSpy = spyOn(LlmService.prototype, "run").mockImplementation(() =>
+      of({ type: "response", data: LlmResponse.create("  Bot reply  ") }),
     );
 
     spacesList = [
@@ -162,14 +149,15 @@ describe("ObserverModule (Integration Tests via Nest Test)", () => {
     }) as unknown as typeof fetch);
 
     testingModule = await Test.createTestingModule({
-      imports: [
-        ConfigModule.forRoot({
-          isGlobal: true,
-          validate: validateConfig,
+      imports: [ConfigModule, ObserverModule],
+    })
+      .overrideProvider(APP_CONFIG)
+      .useValue(
+        makeAppConfig({
+          SETTINGS: { DEBOUNCE_MS: 10, RETRY_DELAY_MS: 10, SCAN_INTERVAL_MS: 200 },
         }),
-        ObserverModule,
-      ],
-    }).compile();
+      )
+      .compile();
 
     await testingModule.init();
     observerService = testingModule.get(ObserverService);
@@ -179,7 +167,6 @@ describe("ObserverModule (Integration Tests via Nest Test)", () => {
   afterAll(async () => {
     await testingModule?.close();
     fetchSpy?.mockRestore();
-    initSpy?.mockRestore();
     runSpy?.mockRestore();
     process.env = originalEnv;
   });

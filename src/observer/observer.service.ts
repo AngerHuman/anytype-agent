@@ -5,11 +5,11 @@ import {
   type OnApplicationBootstrap,
   type OnModuleDestroy,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import { type Subscription, switchMap, timer } from "rxjs";
-import type { AppConfig } from "../app.config";
-import type { Member } from "../client";
 import { AnytypeService } from "../client/anytype.service";
+import type { Member } from "../client/schema";
+import { APP_CONFIG } from "../config/config.module";
+import type { AppConfig } from "../config/config.schema";
 import { OBSERVERS } from "./constants";
 import type { AbstractObserver, ObserverFactory } from "./types";
 
@@ -26,9 +26,9 @@ export class ObserverService implements OnApplicationBootstrap, OnModuleDestroy 
   constructor(
     private readonly anytype: AnytypeService,
     @Inject(OBSERVERS) private readonly observers: ObserverFactory[],
-    private readonly config: ConfigService<AppConfig, true>,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {
-    this.botName = config.get("ANYTYPE_BOT_NAME");
+    this.botName = config.ANYTYPE.BOT_NAME;
   }
 
   private findActiveBot(spaceName: string, members: Member[]): Member | null {
@@ -108,7 +108,7 @@ export class ObserverService implements OnApplicationBootstrap, OnModuleDestroy 
   }
 
   onApplicationBootstrap(): void {
-    this.sub = timer(0, this.config.get("OBSERVER_SCAN_INTERVAL_MS"))
+    this.sub = timer(0, this.config.SETTINGS.SCAN_INTERVAL_MS)
       .pipe(switchMap(() => this.checkSpaces()))
       .subscribe();
   }

@@ -1,6 +1,5 @@
 import { randomInt } from "node:crypto";
 import { Inject, Injectable, Logger, type OnModuleDestroy } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import {
   catchError,
   firstValueFrom,
@@ -12,7 +11,8 @@ import {
   switchMap,
   tap,
 } from "rxjs";
-import type { HostConfig } from "../app.config";
+import { APP_CONFIG } from "../config/config.module";
+import type { AppConfig } from "../config/config.schema";
 import type { AnytypeClient } from "./anytype.client";
 import { ANYTYPE_CLIENT } from "./client.constants";
 import { SPACE_ROUTES_DOC } from "./routes";
@@ -37,18 +37,23 @@ export class AnytypeProxy implements OnModuleDestroy {
   readonly routesDoc = SPACE_ROUTES_DOC;
   readonly traces$ = new Subject<ProxyTrace>();
 
+  public get port(): number | undefined {
+    return this.server?.port;
+  }
+
   constructor(
-    private readonly config: ConfigService<HostConfig, true>,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(ANYTYPE_CLIENT) private readonly client: AnytypeClient,
   ) {}
 
   async start(): Promise<void> {
-    const port = this.config.get("HOST_PROXY_PORT");
-    const targetUrl = this.config.get("ANYTYPE_API_URL");
+    if (this.server) return;
+
+    const targetUrl = this.config.ANYTYPE.API_URL;
 
     try {
       this.server = Bun.serve({
-        port,
+        port: 0,
         fetch: (req) => firstValueFrom(this.proxyRequest$(req)),
       });
 
@@ -57,7 +62,7 @@ export class AnytypeProxy implements OnModuleDestroy {
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`❌ Failed to start proxy on port ${port}: ${msg}`);
+      this.logger.error(`❌ Failed to start proxy on port ${this.server?.port}: ${msg}`);
       throw err;
     }
   }
@@ -116,8 +121,11 @@ export class AnytypeProxy implements OnModuleDestroy {
       map(({ res }) => res),
       catchError((err) => {
         if (err instanceof Response) {
+          const url = new URL(req.url);
+          const alias = this.parseAlias(url.pathname);
+          const active = [...this.spaceAliases.entries()].map(([a, s]) => `${a}->${s}`).join(", ");
           this.logger.warn(
-            `⚠️ Proxy rejected [${err.status}]: ${req.method} ${new URL(req.url).pathname}`,
+            `⚠️ Proxy rejected [${err.status}]: ${req.method} ${url.pathname} (parsed alias: ${alias || "none"}, active: [${active}])`,
           );
           return of(err);
         }
@@ -144,10 +152,12 @@ export class AnytypeProxy implements OnModuleDestroy {
     } while (this.spaceAliases.has(alias));
 
     this.spaceAliases.set(alias, spaceId);
+    this.logger.log(`🔑 Issued space alias: ${alias} -> ${spaceId}`);
     return alias;
   }
 
   revokeSpaceAlias(alias: string): void {
+    this.logger.log(`🔒 Revoking space alias: ${alias}`);
     this.spaceAliases.delete(alias);
   }
 
