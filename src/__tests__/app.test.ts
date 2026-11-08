@@ -1,65 +1,54 @@
 import "reflect-metadata";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { ConfigService } from "@nestjs/config";
-import { NestFactory } from "@nestjs/core";
-import { validateConfig } from "../app.config";
+import { Test } from "@nestjs/testing";
+import { AnytypeService } from "../client/anytype.service";
+import { makeAppEnv } from "../config/__tests__/fixtures";
+import { APP_CONFIG } from "../config/config.module";
+import { LlmService } from "../llm/llm.service";
+import { SshService } from "../ssh/ssh.service";
 
-describe("AppModule & Standalone Bootstrap", () => {
+/**
+ * Boot smoke test: `tsc` cannot verify Nest's DI wiring (injection is resolved at runtime
+ * from `@Inject`/`emitDecoratorMetadata`), so this is the only guard that the provider
+ * graph actually composes and the app starts.
+ */
+describe("AppModule boots (DI wiring)", () => {
   let fetchSpy: ReturnType<typeof spyOn>;
+  let sshSpy: ReturnType<typeof spyOn>;
   const originalEnv = { ...process.env };
 
-  let initSpy: ReturnType<typeof spyOn>;
-
   beforeAll(async () => {
-    process.env.ANYTYPE_API_URL = "http://127.0.0.1:31012";
-    process.env.ANYTYPE_BOT_NAME = "NestBot";
-    process.env.ANYTYPE_API_KEY = "nest_key_999";
-    process.env.LLM_MODE = "host";
-    process.env.HOST_SSH_USER = "testuser";
-    process.env.HOST_SSH_KEY_PATH = "/keys/id_ed25519";
-    process.env.HOST_CLI_BIN = "claude";
+    Object.assign(
+      process.env,
+      makeAppEnv({ ANYTYPE__BOT_NAME: "NestBot", ANYTYPE__API_KEY: "nest_key_999" }),
+    );
+    // Bootstrap reaches the network (Anytype healthcheck) and the host (SSH `--help`).
     fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ data: [] }), { status: 200 }),
     );
-    const { HostModelService } = await import("../llm/host.model");
-    initSpy = spyOn(HostModelService.prototype, "init").mockResolvedValue();
+    sshSpy = spyOn(SshService.prototype, "connect").mockResolvedValue({} as any);
   });
 
   afterAll(() => {
     fetchSpy?.mockRestore();
-    initSpy?.mockRestore();
+    sshSpy?.mockRestore();
     process.env = originalEnv;
   });
 
-  it("validates AppConfig schema via validateConfig", () => {
-    const valid = {
-      ANYTYPE_API_URL: "http://127.0.0.1:31012",
-      ANYTYPE_BOT_NAME: "DevBot",
-      ANYTYPE_API_KEY: "secret_token",
-      LLM_MODE: "host",
-      HOST_SSH_USER: "testuser",
-      HOST_SSH_KEY_PATH: "/keys/id_ed25519",
-      HOST_CLI_BIN: "claude",
-    };
-    const parsed = validateConfig(valid);
-    expect(parsed.ANYTYPE_BOT_NAME).toBe("DevBot");
-    expect(parsed.ANYTYPE_API_URL).toBe("http://127.0.0.1:31012");
-  });
-
-  it("throws clear error if environment variables are missing", () => {
-    expect(() => validateConfig({})).toThrow("Invalid environment variables");
-  });
-
-  it("bootstraps Standalone ApplicationContext and injects ConfigService", async () => {
+  it("resolves the full DI graph at bootstrap", async () => {
     const { AppModule } = await import("../app.module");
-    const app = await NestFactory.createApplicationContext(AppModule, {
-      logger: false,
-    });
 
-    const configService = app.get(ConfigService);
-    expect(configService.get<string>("ANYTYPE_BOT_NAME")).toBe("NestBot");
-    expect(configService.get<string>("ANYTYPE_API_URL")).toBe("http://127.0.0.1:31012");
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
 
-    await app.close();
+    await moduleRef.init();
+
+    expect(moduleRef.get(APP_CONFIG)).toBeDefined();
+    expect(moduleRef.get(AnytypeService)).toBeInstanceOf(AnytypeService);
+    expect(moduleRef.get(LlmService)).toBeInstanceOf(LlmService);
+    expect(sshSpy).toHaveBeenCalledTimes(1);
+
+    await moduleRef.close();
   });
 });

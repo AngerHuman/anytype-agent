@@ -1,5 +1,4 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import {
   catchError,
   concatMap,
@@ -28,25 +27,21 @@ import {
   timeout,
   timer,
 } from "rxjs";
-import type { AppConfig } from "../app.config";
 import { AnytypeService } from "../client/anytype.service";
+import type { ChatMessage } from "../client/schema";
 import type { ChatMessageAdded } from "../client/types";
-import { LLM_SERVICE } from "../llm/llm.module";
-import {
-  type AbstractLlmService,
-  LlmAction,
-  LlmEmptyResponseError,
-  type LlmEvent,
-  LlmResponse,
-} from "../llm/types";
+import { APP_CONFIG } from "../config/config.module";
+import type { AppConfig } from "../config/config.schema";
+import { LlmService } from "../llm/llm.service";
+import { LlmAction, LlmEmptyResponseError, type LlmEvent } from "../llm/types";
 import { AbstractObserver, type ObserverFactory } from "./types";
 
 @Injectable()
 export class ChatsObserverFactory implements ObserverFactory {
   constructor(
     private readonly anytype: AnytypeService,
-    @Inject(LLM_SERVICE) private readonly llm: AbstractLlmService,
-    private readonly config: ConfigService<AppConfig, true>,
+    private readonly llm: LlmService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   create(spaceId: string, _botName: string, botMemberId: string): ChatsObserver {
@@ -70,14 +65,14 @@ export class ChatsObserver extends AbstractObserver {
     private readonly spaceId: string,
     private readonly botMemberId: string,
     private readonly anytype: AnytypeService,
-    private readonly llm: AbstractLlmService,
-    private readonly config: ConfigService<AppConfig, true>,
+    private readonly llm: LlmService,
+    private readonly config: AppConfig,
   ) {
     super();
   }
 
   run(): Observable<unknown> {
-    const scanIntervalMs = this.config.get("OBSERVER_SCAN_INTERVAL_MS");
+    const scanIntervalMs = this.config.SETTINGS.SCAN_INTERVAL_MS;
 
     const activeChatIds$ = timer(0, scanIntervalMs).pipe(
       exhaustMap(() => this.anytype.getChats(this.spaceId)),
@@ -102,7 +97,7 @@ export class ChatsObserver extends AbstractObserver {
                 `Failed in chat ${chatId}: ${this.sanitizeErrorMessage(err)}`,
                 err?.stack,
               );
-              return timer(this.config.get("OBSERVER_RETRY_DELAY_MS"));
+              return timer(this.config.SETTINGS.RETRY_DELAY_MS);
             },
           }),
           takeUntil(activeChatIds$.pipe(filter((activeIds) => !activeIds.has(chatId)))),
@@ -113,10 +108,8 @@ export class ChatsObserver extends AbstractObserver {
   }
 
   private subscribeToChat(chatId: string): Observable<unknown> {
-    const debounceMs = this.config.get("OBSERVER_DEBOUNCE_MS");
-
     const intent$ = this.anytype.subscribeChatMessages(this.spaceId, chatId).pipe(
-      retry({ delay: this.config.get("OBSERVER_RETRY_DELAY_MS") }),
+      retry({ delay: this.config.SETTINGS.RETRY_DELAY_MS }),
       filter((msg) => msg !== null && msg.type === "message_added"),
       concatMap((msg) => this.classifyMessage(chatId, msg)),
       scan((pending: ChatMessageAdded | null, intent: ChatIntent): ChatMessageAdded | null => {
@@ -129,34 +122,25 @@ export class ChatsObserver extends AbstractObserver {
         return pending;
       }, null),
       distinctUntilChanged((a, b) => a?.id === b?.id),
-      debounceTime(debounceMs),
+      debounceTime(this.config.SETTINGS.DEBOUNCE_MS),
       filter((msg): msg is ChatMessageAdded => msg !== null),
     );
 
-    return intent$.pipe(switchMap((msg) => this.handleTrigger(this.spaceId, chatId, msg)));
+    return intent$.pipe(switchMap((msg) => this.handleTrigger(chatId, msg)));
   }
 
-  private handleTrigger(
-    spaceId: string,
-    chatId: string,
-    msg: ChatMessageAdded,
-  ): Observable<unknown> {
-    this.logger.log(`💬 Generating LLM response for chat ${chatId}...`);
+  private handleTrigger(chatId: string, msg: ChatMessageAdded): Observable<unknown> {
+    this.logger.log(
+      `💬 Generating LLM response for chat ${chatId} (trigger: ${msg.id}, creator: ${msg.creator}): "${msg.content?.text?.slice(0, 60)}"...`,
+    );
 
     return this.createProgressMessage(chatId, msg.id).pipe(
       switchMap((progressId) => {
         const abortController = new AbortController();
 
-        return this.preparePayload(spaceId, chatId, msg, progressId).pipe(
-          switchMap(({ payload }) =>
-            this.processLlmRun(
-              spaceId,
-              chatId,
-              payload,
-              progressId,
-              abortController.signal,
-              msg.id,
-            ),
+        return this.request$(() => this.anytype.getChatMessages(this.spaceId, chatId)).pipe(
+          switchMap((history) =>
+            this.processLlmRun(chatId, history, progressId, abortController.signal, msg.id),
           ),
           catchError((err) => {
             if (!abortController.signal.aborted) abortController.abort();
@@ -165,6 +149,9 @@ export class ChatsObserver extends AbstractObserver {
           }),
           tap({
             unsubscribe: () => {
+              this.logger.warn(
+                `🛑 Preempted/Cancelled trigger ${msg.id} in chat ${chatId} (progress ${progressId})`,
+              );
               if (!abortController.signal.aborted) abortController.abort();
 
               this.deleteProgressMessage(chatId, progressId).subscribe();
@@ -196,42 +183,71 @@ export class ChatsObserver extends AbstractObserver {
     );
   }
 
+  private formatAction(action: LlmAction): string {
+    const total = action.callIds.size;
+    const pending = action.pendingIds.size;
+    const completed = total - pending;
+
+    let badge = "";
+    if (action.status === "error") {
+      if (total > 1) {
+        badge = completed > 0 ? `⚠️ [${completed}/${total}]` : `❌ [${completed}/${total}]`;
+      } else {
+        badge = "❌ [Error]";
+      }
+    } else if (action.status === "done") {
+      badge = total > 1 ? `✅ [${total}/${total}]` : "✅ [Done]";
+    } else {
+      badge = total > 1 ? `⏳ [${completed}/${total}]` : "⏳ [Pending]";
+    }
+
+    return `${badge} ${action.comment}`.trim();
+  }
+
   private processLlmRun(
-    spaceId: string,
     chatId: string,
-    payload: object,
+    history: ChatMessage[],
     progressId: string,
     abort: AbortSignal,
-    replyToMessageId?: string,
+    triggerId: string,
   ): Observable<unknown> {
-    return this.llm.run(spaceId, payload, abort).pipe(
-      this.requireLlmResponse(),
-      scan<LlmEvent, { event: LlmEvent; text: string }>(
-        (acc, event) => {
-          if (event instanceof LlmAction) {
-            const text = acc.text ? `${acc.text}\n${event.detail}` : event.detail;
-            return { event, text };
-          }
-          return { event, text: acc.text };
+    return this.llm
+      .run(
+        {
+          spaceId: this.spaceId,
+          chatId,
+          botId: this.botMemberId,
+          abort,
+          triggerId,
         },
-        { event: null as unknown as LlmEvent, text: INITIAL_PROGRESS_TEXT },
-      ),
-      filter((state) => state.event !== null),
-      concatMap(({ event, text }) => {
-        if (event instanceof LlmAction)
-          return this.editProgressMessage(chatId, progressId, text).pipe(catchError(() => EMPTY));
+        history,
+      )
+      .pipe(
+        this.requireLlmResponse(),
+        concatMap((event) => {
+          switch (event.type) {
+            case "actions": {
+              const lines = event.data.map((act) => this.formatAction(act));
+              const progressText = lines.length > 0 ? lines.join("\n") : INITIAL_PROGRESS_TEXT;
+              return this.editProgressMessage(chatId, progressId, progressText).pipe(
+                catchError(() => EMPTY),
+              );
+            }
 
-        const trimmed = event.text.trim();
-        if (!trimmed) throw new LlmEmptyResponseError();
+            case "response": {
+              const trimmed = event.data.text.trim();
+              if (!trimmed) throw new LlmEmptyResponseError();
 
-        return this.request$(() =>
-          this.anytype.addChatMessage(spaceId, chatId, {
-            text: trimmed,
-            reply_to_message_id: replyToMessageId,
-          }),
-        ).pipe(concatMap(() => this.deleteProgressMessage(chatId, progressId)));
-      }),
-    );
+              return this.request$(() =>
+                this.anytype.addChatMessage(this.spaceId, chatId, {
+                  text: trimmed,
+                  reply_to_message_id: triggerId,
+                }),
+              ).pipe(concatMap(() => this.deleteProgressMessage(chatId, progressId)));
+            }
+          }
+        }),
+      );
   }
 
   private requireLlmResponse(): MonoTypeOperatorFunction<LlmEvent> {
@@ -239,7 +255,7 @@ export class ChatsObserver extends AbstractObserver {
       merge(
         shared$,
         shared$.pipe(
-          filter((e) => e instanceof LlmResponse),
+          filter((e) => e.type === "response"),
           throwIfEmpty(() => new LlmEmptyResponseError()),
           ignoreElements(),
         ),
@@ -285,6 +301,7 @@ export class ChatsObserver extends AbstractObserver {
     messageId: string,
     text: string,
   ): Observable<unknown> {
+    this.logger.debug(`✏️ Progress update [${messageId}]: ${text.slice(0, 80).replace(/\n/g, " ")}`);
     return this.request$(() =>
       this.anytype.editChatMessage(this.spaceId, chatId, messageId, this.progressBody(text)),
     );
@@ -299,34 +316,34 @@ export class ChatsObserver extends AbstractObserver {
     );
   }
 
-  private preparePayload(
-    spaceId: string,
-    chatId: string,
-    msg: ChatMessageAdded,
-    progressId: string,
-  ) {
-    return this.request$(() => this.anytype.getChatMessages(spaceId, chatId)).pipe(
-      map((history) => ({ payload: { history, msg }, progressId })),
-    );
-  }
-
   private classifyMessage(chatId: string, msg: ChatMessageAdded): Observable<ChatIntent> {
     // 1. Message from the bot itself (cancels target trigger if replying to it)
-    if (this.isBotId(msg.creator))
+    if (this.isBotId(msg.creator)) {
+      this.logger.debug(`Message from the bot itself: ${this.preview(msg.content.text)}`);
       return of({ type: "bot_reply", replyToId: msg.reply_to_message_id });
+    }
 
     // 2. Direct mention of the bot
-    if (this.mentionsBot(msg)) return of({ type: "trigger", msg });
+    if (this.mentionsBot(msg)) {
+      this.logger.debug(
+        `Mention in chat ${chatId}: msg=${msg.id}: "${this.preview(msg.content?.text, 50)}"`,
+      );
+      return of({ type: "trigger", msg });
+    }
 
     // 3. Reply to another message: check if replied message was from the bot
     if (msg.reply_to_message_id) {
       const replyToId = msg.reply_to_message_id;
       return this.request$(() => this.anytype.getChatMessage(this.spaceId, chatId, replyToId)).pipe(
-        map((replied) =>
-          this.isBotId(replied?.creator)
-            ? ({ type: "trigger", msg } as const)
-            : ({ type: "noop" } as const),
-        ),
+        map((replied) => {
+          if (this.isBotId(replied?.creator)) {
+            this.logger.debug(
+              `Reply-to-bot in chat ${chatId}: msg=${msg.id} replies to ${replyToId}`,
+            );
+            return { type: "trigger", msg } as const;
+          }
+          return { type: "noop" } as const;
+        }),
         catchError(() => of({ type: "noop" } as const)),
       );
     }
@@ -340,6 +357,11 @@ export class ChatsObserver extends AbstractObserver {
 
   private readonly mentionsBot = (msg: ChatMessageAdded): boolean =>
     Boolean(msg.content.marks?.some((m) => m.type === "mention" && this.isBotId(m.param)));
+
+  private readonly preview = (text: string | undefined, max = 80): string => {
+    const first = text?.split("\n")[0] ?? "";
+    return first.length > max ? `${first.slice(0, max)}…` : first;
+  };
 
   private readonly sanitizeErrorMessage = (err: unknown): string => {
     const raw = err instanceof Error ? err.message : String(err);

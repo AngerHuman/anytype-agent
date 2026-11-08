@@ -1,11 +1,12 @@
 import "reflect-metadata";
 import { describe, expect, it, mock } from "bun:test";
-import { type ConfigService } from "@nestjs/config";
 import { defer, Observable, of, Subject } from "rxjs";
-import type { AppConfig } from "../../app.config";
-import type { AnytypeService, Chat } from "../../client";
-import type { ChatEvent, ChatMessage } from "../../client/types";
-import { type AbstractLlmService, LlmAction, type LlmEvent, LlmResponse } from "../../llm/types";
+import type { AnytypeService } from "../../client/anytype.service";
+import type { Chat, ChatMessage } from "../../client/schema";
+import type { ChatEvent } from "../../client/types";
+import { makeAppConfig } from "../../config/__tests__/fixtures";
+import type { LlmService } from "../../llm/llm.service";
+import { LlmAction, type LlmEvent, LlmResponse, type LlmRunContext } from "../../llm/types";
 import { ChatsObserver, ChatsObserverFactory } from "../chats.observer";
 import { callArg, callCount, makeMessage, sleep, waitFor } from "./helpers";
 
@@ -15,7 +16,7 @@ describe("ChatsObserver (Unit Tests)", () => {
       getChats?: () => Promise<Chat[]>;
       getChatMessages?: (spaceId: string, chatId: string) => Promise<ChatMessage[]>;
       getChatMessage?: (spaceId: string, chatId: string, messageId: string) => Promise<ChatMessage>;
-      llmHandler?: (spaceId: string, payload: object, abort: AbortSignal) => Observable<LlmEvent>;
+      llmHandler?: (ctx: LlmRunContext, history: ChatMessage[]) => Observable<LlmEvent>;
       scanIntervalMs?: number;
       editChatMessage?: (
         spaceId: string,
@@ -64,18 +65,19 @@ describe("ChatsObserver (Unit Tests)", () => {
     } as unknown as AnytypeService;
 
     const llmFake = {
-      init: mock(async () => {}),
-      run: mock(options.llmHandler ?? (() => of(LlmResponse.create("  Bot reply  ")))),
-    } as unknown as AbstractLlmService;
+      run: mock(
+        options.llmHandler ??
+          (() => of<LlmEvent>({ type: "response", data: LlmResponse.create("  Bot reply  ") })),
+      ),
+    } as unknown as LlmService;
 
-    const configMock = {
-      get: (key: string) => {
-        if (key === "OBSERVER_SCAN_INTERVAL_MS") return options.scanIntervalMs ?? 60_000;
-        if (key === "OBSERVER_RETRY_DELAY_MS") return 10;
-        if (key === "OBSERVER_DEBOUNCE_MS") return 10;
-        return undefined;
+    const configMock = makeAppConfig({
+      SETTINGS: {
+        SCAN_INTERVAL_MS: options.scanIntervalMs ?? 60_000,
+        RETRY_DELAY_MS: 10,
+        DEBOUNCE_MS: 10,
       },
-    } as unknown as ConfigService<AppConfig, true>;
+    });
 
     const observer = new ChatsObserver(
       "space.1",
@@ -230,9 +232,9 @@ describe("ChatsObserver (Unit Tests)", () => {
     let abortSignal2: AbortSignal | undefined;
 
     const { ready, pushEvent, llmFake } = setup({
-      llmHandler: (_spaceId, _payload, abort) => {
+      llmHandler: (ctx) => {
         if (!abortSignal1) {
-          abortSignal1 = abort;
+          abortSignal1 = ctx.abort;
           return new Observable<LlmEvent>((subscriber) => {
             const timer = setTimeout(() => {
               subscriber.next(LlmResponse.create("First reply"));
@@ -241,7 +243,7 @@ describe("ChatsObserver (Unit Tests)", () => {
             return () => clearTimeout(timer);
           });
         }
-        abortSignal2 = abort;
+        abortSignal2 = ctx.abort;
         return of(LlmResponse.create("Second reply"));
       },
     });
@@ -272,10 +274,13 @@ describe("ChatsObserver (Unit Tests)", () => {
   it("7. LlmAction Streaming: intermediate actions edit progress message with italic marks", async () => {
     const { ready, pushEvent, anytypeFake } = setup({
       llmHandler: () =>
-        of(
-          LlmAction.create("Tool 1 called"),
-          LlmAction.create("Tool 2 called"),
-          LlmResponse.create("Final output"),
+        of<LlmEvent>(
+          { type: "actions", data: [LlmAction.create("Tool 1 called")] },
+          {
+            type: "actions",
+            data: [LlmAction.create("Tool 1 called"), LlmAction.create("Tool 2 called")],
+          },
+          { type: "response", data: LlmResponse.create("Final output") },
         ),
     });
 
@@ -301,8 +306,8 @@ describe("ChatsObserver (Unit Tests)", () => {
   it("8. ChatsObserverFactory: creates instance implementing ObserverFactory", () => {
     const factory = new ChatsObserverFactory(
       {} as AnytypeService,
-      {} as AbstractLlmService,
-      {} as ConfigService<AppConfig, true>,
+      {} as unknown as LlmService,
+      makeAppConfig(),
     );
 
     const observer = factory.create("space.1", "TestBot", "member.1");
@@ -363,8 +368,8 @@ describe("ChatsObserver (Unit Tests)", () => {
     await waitFor(() => callCount(llmFake.run) === 1);
 
     expect(callCount(llmFake.run)).toBe(1);
-    const payloadArg = callArg<{ msg: { id: string } }>(llmFake.run, 0, 1);
-    expect(payloadArg.msg.id).toBe("burst_2");
+    const ctxArg = callArg<LlmRunContext>(llmFake.run, 0, 0);
+    expect(ctxArg.triggerId).toBe("burst_2");
   });
 
   it("11. Positive Backfill: unanswered mention in replay burst triggers LLM after debounce window", async () => {
@@ -418,8 +423,8 @@ describe("ChatsObserver (Unit Tests)", () => {
     await waitFor(() => callCount(llmFake.run) === 1);
 
     expect(callCount(llmFake.run)).toBe(1);
-    const payloadArg = callArg<{ msg: { id: string } }>(llmFake.run, 0, 1);
-    expect(payloadArg.msg.id).toBe("hist_unanswered");
+    const ctxArg = callArg<LlmRunContext>(llmFake.run, 0, 0);
+    expect(ctxArg.triggerId).toBe("hist_unanswered");
 
     // Check that reply_to_message_id links back to the unanswered question
     const progressPost = callArg<{ text: string; reply_to_message_id?: string }>(
@@ -556,7 +561,7 @@ describe("ChatsObserver (Unit Tests)", () => {
 
   it("16. Empty response: blank LLM response triggers error edit, not hanging working indicator", async () => {
     const { ready, pushEvent, anytypeFake } = setup({
-      llmHandler: () => of(LlmResponse.create("   ")),
+      llmHandler: () => of<LlmEvent>({ type: "response", data: LlmResponse.create("   ") }),
     });
 
     await ready();
@@ -575,7 +580,7 @@ describe("ChatsObserver (Unit Tests)", () => {
 
   it("17. Incomplete LLM stream: stream with only LlmActions completing without LlmResponse triggers error edit", async () => {
     const { ready, pushEvent, anytypeFake } = setup({
-      llmHandler: () => of(LlmAction.create("Thinking...")),
+      llmHandler: () => of<LlmEvent>({ type: "actions", data: [LlmAction.create("Thinking...")] }),
     });
 
     await ready();

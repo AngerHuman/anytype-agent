@@ -1,23 +1,19 @@
 import "reflect-metadata";
 import { describe, expect, it, mock } from "bun:test";
-import type { ConfigService } from "@nestjs/config";
 import { throwError } from "rxjs";
-import type { AppConfig } from "../../app.config";
-import type { AnytypeService, Member } from "../../client";
+import type { AnytypeService } from "../../client/anytype.service";
+import type { Member } from "../../client/schema";
+import { makeAppConfig } from "../../config/__tests__/fixtures";
 import { ObserverService } from "../observer.service";
 import type { AbstractObserver, ObserverFactory } from "../types";
 import { callCount, makeFakeObserver, type ObserverServiceInternals } from "./helpers";
 
 describe("ObserverService (Unit Tests)", () => {
-  const createMockConfig = (botName = "TestBot", scanIntervalMs = 60000) => {
-    return {
-      get: (key: string) => {
-        if (key === "ANYTYPE_BOT_NAME") return botName;
-        if (key === "OBSERVER_SCAN_INTERVAL_MS") return scanIntervalMs;
-        return undefined;
-      },
-    } as unknown as ConfigService<AppConfig, true>;
-  };
+  const createMockConfig = (botName = "TestBot", scanIntervalMs = 60000) =>
+    makeAppConfig({
+      ANYTYPE: { BOT_NAME: botName },
+      SETTINGS: { SCAN_INTERVAL_MS: scanIntervalMs },
+    });
 
   const makeSpaceWithMembers = (
     id: string,
