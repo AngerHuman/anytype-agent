@@ -11,9 +11,7 @@ Built with **Bun**, **NestJS 11**, **RxJS**, **TypeBox**, and the **Vercel AI SD
 
 ## 🎬 Demo
 
-<video src="https://github.com/user-attachments/assets/794d40de-0b38-475f-9347-09ae4cf7b1fd" controls width="600"></video>
-
-[Open the demo in a new tab](https://github.com/user-attachments/assets/794d40de-0b38-475f-9347-09ae4cf7b1fd)
+<img src="docs/demo.gif" width="600" alt="Anytype Agent replying to a mention in an Anytype chat">
 
 ---
 
