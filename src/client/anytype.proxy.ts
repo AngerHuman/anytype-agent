@@ -54,6 +54,7 @@ export class AnytypeProxy implements OnModuleDestroy {
     try {
       this.server = Bun.serve({
         port: 0,
+        hostname: "127.0.0.1",
         fetch: (req) => firstValueFrom(this.proxyRequest$(req)),
       });
 
